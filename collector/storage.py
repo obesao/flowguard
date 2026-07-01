@@ -12,6 +12,10 @@ SCHEMA = """
 -- direction='in' é o destino do tráfego (cliente recebendo); para
 -- direction='out' é a origem (cliente enviando) — sempre "o prefixo protegido
 -- de interesse", nunca o IP do outro lado da conversa.
+-- top_dst_ips só é preenchido para direction='in' quando dst_prefix é um
+-- prefixo de fato protegido (não o /24 de fallback usado pra destinos que não
+-- são clientes) — é o host /32 específico dentro do prefixo que recebeu o
+-- tráfego, análogo a top_src_ips mas do lado do destino.
 CREATE TABLE IF NOT EXISTS flow_aggs (
   id           INTEGER PRIMARY KEY,
   ts           INTEGER NOT NULL,
@@ -24,7 +28,8 @@ CREATE TABLE IF NOT EXISTS flow_aggs (
   avg_pkt_size INTEGER NOT NULL,
   top_src_ips  TEXT,
   src_countries TEXT,
-  direction    TEXT NOT NULL DEFAULT 'in'
+  direction    TEXT NOT NULL DEFAULT 'in',
+  top_dst_ips  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS attacks (
@@ -40,7 +45,8 @@ CREATE TABLE IF NOT EXISTS attacks (
   top_sources  TEXT,
   mitigated    INTEGER DEFAULT 0,
   ai_analysis  TEXT,
-  dismissed    INTEGER DEFAULT 0
+  dismissed    INTEGER DEFAULT 0,
+  target_host  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS flowspec_rules (
@@ -85,6 +91,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "direction" not in cols:
         conn.execute("ALTER TABLE flow_aggs ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'")
         conn.commit()
+    if "top_dst_ips" not in cols:
+        conn.execute("ALTER TABLE flow_aggs ADD COLUMN top_dst_ips TEXT")
+        conn.commit()
+    attack_cols = {row["name"] for row in conn.execute("PRAGMA table_info(attacks)")}
+    if "target_host" not in attack_cols:
+        conn.execute("ALTER TABLE attacks ADD COLUMN target_host TEXT")
+        conn.commit()
 
 
 def connect(db_path: str, check_same_thread: bool = True) -> sqlite3.Connection:
@@ -111,12 +124,12 @@ def insert_flow_aggs_batch(conn: sqlite3.Connection, rows: list[dict]) -> None:
     conn.executemany(
         """INSERT INTO flow_aggs
            (ts, dst_prefix, protocol, dst_port, bps, pps, flow_count, avg_pkt_size,
-            top_src_ips, src_countries, direction)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            top_src_ips, src_countries, direction, top_dst_ips)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             (r["ts"], r["dst_prefix"], r["protocol"], r["dst_port"], r["bps"], r["pps"],
              r["flow_count"], r["avg_pkt_size"], json.dumps(r["top_src_ips"]), json.dumps(r["src_countries"]),
-             r.get("direction", "in"))
+             r.get("direction", "in"), json.dumps(r["top_dst_ips"]) if r.get("top_dst_ips") else None)
             for r in rows
         ],
     )
@@ -299,6 +312,25 @@ def protocol_timeseries(conn: sqlite3.Connection, window_s: int = 300, bucket_s:
     return [buckets[k] for k in sorted(buckets)]
 
 
+def top_hosts_for_prefix(conn: sqlite3.Connection, dst_prefix: str, window_s: int = 3600, limit: int = 15) -> list[dict]:
+    """Hosts /32 individuais dentro de um prefixo protegido, ranqueados por
+    presença nos top_dst_ips da janela — 'qual host está consumindo mais'
+    dentro do prefixo selecionado. Mesma limitação de attack_detail: occurrences
+    é frequência entre ciclos, não volume exato por host."""
+    since = int(time.time()) - window_s
+    rows = conn.execute(
+        """SELECT top_dst_ips FROM flow_aggs INDEXED BY idx_flow_aggs_prefix
+           WHERE dst_prefix = ? AND direction = 'in' AND ts >= ?""",
+        (dst_prefix, since),
+    ).fetchall()
+    occurrences: dict[str, int] = {}
+    for r in rows:
+        for ip in json.loads(r["top_dst_ips"] or "[]"):
+            occurrences[ip] = occurrences.get(ip, 0) + 1
+    top = sorted(occurrences.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    return [{"ip": ip, "occurrences": n} for ip, n in top]
+
+
 def save_ai_analysis(conn: sqlite3.Connection, attack_id: int, analysis: str) -> bool:
     cur = conn.execute("UPDATE attacks SET ai_analysis = ? WHERE id = ?", (analysis, attack_id))
     conn.commit()
@@ -325,7 +357,7 @@ def attack_detail(conn: sqlite3.Connection, dst_prefix: str, ts_start: int, ts_e
     descartando as origens dos outros ciclos da janela do ataque."""
     until = ts_end or int(time.time())
     rows = conn.execute(
-        """SELECT protocol, dst_port, bps, pps, top_src_ips
+        """SELECT protocol, dst_port, bps, pps, top_src_ips, top_dst_ips
            FROM flow_aggs INDEXED BY idx_flow_aggs_prefix
            WHERE dst_prefix = ? AND direction = 'in' AND ts BETWEEN ? AND ?""",
         (dst_prefix, ts_start, until),
@@ -340,20 +372,33 @@ def attack_detail(conn: sqlite3.Connection, dst_prefix: str, ts_start: int, ts_e
     top_ports = sorted(by_port.values(), key=lambda p: p["bps"], reverse=True)[:limit]
     top_keys = {(p["protocol"], p["dst_port"]) for p in top_ports}
 
-    # só conta origens das portas/protocolos que de fato dominam o ataque (top_ports) —
-    # senão tráfego legítimo do cliente em outras portas, na mesma janela, dilui/esconde
-    # os IPs que efetivamente atacaram.
+    # só conta origens/hosts das portas/protocolos que de fato dominam o ataque
+    # (top_ports) — senão tráfego legítimo do cliente em outras portas, na mesma
+    # janela, dilui/esconde os IPs que efetivamente atacaram.
     src_occurrences: dict[str, int] = {}
+    dst_occurrences: dict[str, int] = {}
     for r in rows:
         if (r["protocol"], r["dst_port"]) not in top_keys:
             continue
         for ip in json.loads(r["top_src_ips"] or "[]"):
             src_occurrences[ip] = src_occurrences.get(ip, 0) + 1
+        for ip in json.loads(r["top_dst_ips"] or "[]"):
+            dst_occurrences[ip] = dst_occurrences.get(ip, 0) + 1
     top_sources = sorted(src_occurrences.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    top_hosts = sorted(dst_occurrences.items(), key=lambda kv: kv[1], reverse=True)[:limit]
     return {
         "by_port": top_ports,
         "top_sources": [{"ip": ip, "occurrences": n} for ip, n in top_sources],
+        "top_hosts": [{"ip": ip, "occurrences": n} for ip, n in top_hosts],
     }
+
+
+def attack_top_host(conn: sqlite3.Connection, dst_prefix: str, ts_start: int, ts_end: int | None) -> str | None:
+    """Host /32 que mais concentrou tráfego num ataque — usado pra enriquecer a
+    listagem de ataques (coluna Alvo) sem duplicar a lógica de attack_detail."""
+    detail = attack_detail(conn, dst_prefix, ts_start, ts_end, limit=1)
+    hosts = detail["top_hosts"]
+    return hosts[0]["ip"] if hosts else None
 
 
 def list_open_attacks_by_key(conn: sqlite3.Connection) -> dict[tuple, dict]:
@@ -379,8 +424,13 @@ def apply_attack_changes(conn: sqlite3.Connection, to_insert: list[dict],
             "UPDATE attacks SET bps_peak = MAX(bps_peak, ?), pps_peak = MAX(pps_peak, ?) WHERE id = ?",
             (bps, pps, attack_id),
         )
-    for attack_id, ts_end in to_close:
-        conn.execute("UPDATE attacks SET ts_end = ? WHERE id = ?", (ts_end, attack_id))
+    for attack_id, ts_end, dst_prefix, ts_start in to_close:
+        # calculado uma vez, no encerramento — evita recalcular pra cada ataque
+        # fechado a cada vez que a lista é exibida (ver attack_top_host/attack_detail)
+        target_host = attack_top_host(conn, dst_prefix, ts_start, ts_end)
+        conn.execute(
+            "UPDATE attacks SET ts_end = ?, target_host = ? WHERE id = ?", (ts_end, target_host, attack_id)
+        )
     conn.commit()
 
 

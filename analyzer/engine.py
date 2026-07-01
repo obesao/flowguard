@@ -167,12 +167,12 @@ class DetectionEngine:
         else:
             self._pending.pop(key, None)
             if existing:
-                to_close.append((existing["id"], now))
+                to_close.append((existing["id"], now, existing["dst_prefix"], existing["ts_start"]))
 
 
 def to_close_log(to_close: list[tuple], open_attacks: dict[tuple, dict]):
     by_id = {row["id"]: key for key, row in open_attacks.items()}
-    for attack_id, _ts_end in to_close:
+    for attack_id, _ts_end, _dst_prefix, _ts_start in to_close:
         key = by_id.get(attack_id)
         if key is None:
             continue

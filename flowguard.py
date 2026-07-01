@@ -204,7 +204,7 @@ class FlowGuardDaemon:
         protected = self.config.get("protected_prefixes", [])
         interval = self.config["database"]["aggregate_interval_s"]
         groups: dict[tuple, dict] = defaultdict(
-            lambda: {"bytes": 0, "packets": 0, "flow_count": 0, "src_ips": defaultdict(int)}
+            lambda: {"bytes": 0, "packets": 0, "flow_count": 0, "src_ips": defaultdict(int), "dst_ips": defaultdict(int)}
         )
         # totais por (prefixo, protocolo) — usados pela detecção de DDoS volumétrico
         proto_totals: dict[tuple, dict] = defaultdict(lambda: {"bytes": 0, "packets": 0})
@@ -213,12 +213,18 @@ class FlowGuardDaemon:
         amp_totals: dict[tuple, dict] = defaultdict(lambda: {"bytes": 0, "packets": 0})
 
         for rec in records:
-            prefix = resolve_dst_prefix(rec.dst_ip, protected)
+            matched_dst_prefix = match_protected_prefix(rec.dst_ip, protected)
+            prefix = matched_dst_prefix if matched_dst_prefix is not None else resolve_dst_prefix(rec.dst_ip, protected)
             g = groups[(prefix, rec.protocol, rec.dst_port, "in")]
             g["bytes"] += rec.real_bytes
             g["packets"] += rec.real_packets
             g["flow_count"] += 1
             g["src_ips"][rec.src_ip] += rec.real_bytes
+            # host /32 de destino só é rastreado dentro de prefixos de fato protegidos
+            # (não no /24 de fallback) — é o que permite mostrar qual host exato foi
+            # atacado/está consumindo, em vez de só o bloco inteiro
+            if matched_dst_prefix is not None:
+                g["dst_ips"][rec.dst_ip] += rec.real_bytes
 
             pt = proto_totals[(prefix, rec.protocol)]
             pt["bytes"] += rec.real_bytes
@@ -247,10 +253,12 @@ class FlowGuardDaemon:
             pps = int(g["packets"] / interval)
             avg_pkt_size = int(g["bytes"] / g["packets"]) if g["packets"] else 0
             top_src = sorted(g["src_ips"].items(), key=lambda kv: kv[1], reverse=True)[:10]
+            top_dst = sorted(g["dst_ips"].items(), key=lambda kv: kv[1], reverse=True)[:10]
             rows.append({
                 "ts": now, "dst_prefix": prefix, "protocol": protocol, "dst_port": dst_port,
                 "bps": bps, "pps": pps, "flow_count": g["flow_count"], "avg_pkt_size": avg_pkt_size,
                 "top_src_ips": [ip for ip, _ in top_src], "src_countries": {}, "direction": direction,
+                "top_dst_ips": [ip for ip, _ in top_dst],
             })
 
         if rows:
