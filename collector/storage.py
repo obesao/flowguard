@@ -310,6 +310,52 @@ def get_attack(conn: sqlite3.Connection, attack_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def attack_detail(conn: sqlite3.Connection, dst_prefix: str, ts_start: int, ts_end: int | None,
+                   limit: int = 10) -> dict:
+    """Detalhamento factual (sem IA) de um ataque: tráfego por protocolo/porta e IPs de
+    origem observados na janela do ataque — derivado de flow_aggs, já que a coluna
+    attacks.top_sources nunca é preenchida pelo detector (ele só vê totais agregados,
+    não flows individuais). top_src_ips por linha já é uma amostra (top 10 por ciclo de
+    agregação), então 'occurrences' é quantos ciclos aquele IP apareceu nesse top — não é
+    volume exato em bytes por IP, que não é armazenado.
+
+    Busca linhas individuais (não agregadas em SQL) porque SUM(bps) por porta precisa
+    somar todos os ciclos, e top_src_ips é uma coluna não-agregada — misturar os dois
+    num único GROUP BY faria o SQLite devolver o top_src_ips de um ciclo arbitrário só,
+    descartando as origens dos outros ciclos da janela do ataque."""
+    until = ts_end or int(time.time())
+    rows = conn.execute(
+        """SELECT protocol, dst_port, bps, pps, top_src_ips
+           FROM flow_aggs INDEXED BY idx_flow_aggs_prefix
+           WHERE dst_prefix = ? AND direction = 'in' AND ts BETWEEN ? AND ?""",
+        (dst_prefix, ts_start, until),
+    ).fetchall()
+
+    by_port: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["protocol"], r["dst_port"])
+        agg = by_port.setdefault(key, {"protocol": r["protocol"], "dst_port": r["dst_port"], "bps": 0, "pps": 0})
+        agg["bps"] += r["bps"]
+        agg["pps"] += r["pps"]
+    top_ports = sorted(by_port.values(), key=lambda p: p["bps"], reverse=True)[:limit]
+    top_keys = {(p["protocol"], p["dst_port"]) for p in top_ports}
+
+    # só conta origens das portas/protocolos que de fato dominam o ataque (top_ports) —
+    # senão tráfego legítimo do cliente em outras portas, na mesma janela, dilui/esconde
+    # os IPs que efetivamente atacaram.
+    src_occurrences: dict[str, int] = {}
+    for r in rows:
+        if (r["protocol"], r["dst_port"]) not in top_keys:
+            continue
+        for ip in json.loads(r["top_src_ips"] or "[]"):
+            src_occurrences[ip] = src_occurrences.get(ip, 0) + 1
+    top_sources = sorted(src_occurrences.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    return {
+        "by_port": top_ports,
+        "top_sources": [{"ip": ip, "occurrences": n} for ip, n in top_sources],
+    }
+
+
 def list_open_attacks_by_key(conn: sqlite3.Connection) -> dict[tuple, dict]:
     """Todos os ataques em aberto, de uma vez — usado pela engine de detecção para
     evitar 1 SELECT por (prefixo, tipo) avaliado a cada ciclo."""
