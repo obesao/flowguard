@@ -24,7 +24,7 @@ from api.socket_server import SocketServer
 from bgp.manager import BgpManager
 from collector import configio, storage
 from collector.netflow import TemplateStore, parse_packet
-from collector.prefixes import resolve_dst_prefix
+from collector.prefixes import match_protected_prefix, resolve_dst_prefix
 
 LOG = logging.getLogger("flowguard")
 
@@ -214,7 +214,7 @@ class FlowGuardDaemon:
 
         for rec in records:
             prefix = resolve_dst_prefix(rec.dst_ip, protected)
-            g = groups[(prefix, rec.protocol, rec.dst_port)]
+            g = groups[(prefix, rec.protocol, rec.dst_port, "in")]
             g["bytes"] += rec.real_bytes
             g["packets"] += rec.real_packets
             g["flow_count"] += 1
@@ -229,9 +229,20 @@ class FlowGuardDaemon:
                 at["bytes"] += rec.real_bytes
                 at["packets"] += rec.real_packets
 
+            # tráfego de saída (cliente protegido como origem) — só quando o src
+            # cai num prefixo protegido; sem fallback pra não explodir cardinalidade
+            # com todo IP externo, e sem granularidade de porta (não usado pela
+            # detecção, só pelo gráfico de tráfego por prefixo)
+            src_prefix = match_protected_prefix(rec.src_ip, protected)
+            if src_prefix is not None:
+                go = groups[(src_prefix, rec.protocol, 0, "out")]
+                go["bytes"] += rec.real_bytes
+                go["packets"] += rec.real_packets
+                go["flow_count"] += 1
+
         now = int(time.time())
         rows = []
-        for (prefix, protocol, dst_port), g in groups.items():
+        for (prefix, protocol, dst_port, direction), g in groups.items():
             bps = int(g["bytes"] * 8 / interval)
             pps = int(g["packets"] / interval)
             avg_pkt_size = int(g["bytes"] / g["packets"]) if g["packets"] else 0
@@ -239,7 +250,7 @@ class FlowGuardDaemon:
             rows.append({
                 "ts": now, "dst_prefix": prefix, "protocol": protocol, "dst_port": dst_port,
                 "bps": bps, "pps": pps, "flow_count": g["flow_count"], "avg_pkt_size": avg_pkt_size,
-                "top_src_ips": [ip for ip, _ in top_src], "src_countries": {},
+                "top_src_ips": [ip for ip, _ in top_src], "src_countries": {}, "direction": direction,
             })
 
         if rows:

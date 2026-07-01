@@ -8,6 +8,10 @@ import time
 from pathlib import Path
 
 SCHEMA = """
+-- dst_prefix guarda o prefixo monitorado da linha em ambas as direções: para
+-- direction='in' é o destino do tráfego (cliente recebendo); para
+-- direction='out' é a origem (cliente enviando) — sempre "o prefixo protegido
+-- de interesse", nunca o IP do outro lado da conversa.
 CREATE TABLE IF NOT EXISTS flow_aggs (
   id           INTEGER PRIMARY KEY,
   ts           INTEGER NOT NULL,
@@ -19,7 +23,8 @@ CREATE TABLE IF NOT EXISTS flow_aggs (
   flow_count   INTEGER NOT NULL,
   avg_pkt_size INTEGER NOT NULL,
   top_src_ips  TEXT,
-  src_countries TEXT
+  src_countries TEXT,
+  direction    TEXT NOT NULL DEFAULT 'in'
 );
 
 CREATE TABLE IF NOT EXISTS attacks (
@@ -72,6 +77,16 @@ CREATE INDEX IF NOT EXISTS idx_attacks_active ON attacks(ts_end, dismissed);
 """
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """CREATE TABLE IF NOT EXISTS não adiciona coluna a tabela já existente —
+    bancos criados antes da coluna direction precisam desse ALTER explícito.
+    Linhas antigas ficam como 'in' (DEFAULT), que é o comportamento anterior."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(flow_aggs)")}
+    if "direction" not in cols:
+        conn.execute("ALTER TABLE flow_aggs ADD COLUMN direction TEXT NOT NULL DEFAULT 'in'")
+        conn.commit()
+
+
 def connect(db_path: str, check_same_thread: bool = True) -> sqlite3.Connection:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path, check_same_thread=check_same_thread)
@@ -80,6 +95,7 @@ def connect(db_path: str, check_same_thread: bool = True) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
     conn.commit()
+    _migrate(conn)
     return conn
 
 
@@ -95,11 +111,12 @@ def insert_flow_aggs_batch(conn: sqlite3.Connection, rows: list[dict]) -> None:
     conn.executemany(
         """INSERT INTO flow_aggs
            (ts, dst_prefix, protocol, dst_port, bps, pps, flow_count, avg_pkt_size,
-            top_src_ips, src_countries)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            top_src_ips, src_countries, direction)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         [
             (r["ts"], r["dst_prefix"], r["protocol"], r["dst_port"], r["bps"], r["pps"],
-             r["flow_count"], r["avg_pkt_size"], json.dumps(r["top_src_ips"]), json.dumps(r["src_countries"]))
+             r["flow_count"], r["avg_pkt_size"], json.dumps(r["top_src_ips"]), json.dumps(r["src_countries"]),
+             r.get("direction", "in"))
             for r in rows
         ],
     )
@@ -119,7 +136,7 @@ def daemon_stats(conn: sqlite3.Connection, window_s: int = 30) -> dict:
     since = int(time.time()) - window_s
     row = conn.execute(
         "SELECT COALESCE(SUM(bps),0) AS bps, COALESCE(SUM(pps),0) AS pps, "
-        "COALESCE(SUM(flow_count),0) AS flows FROM flow_aggs WHERE ts >= ?",
+        "COALESCE(SUM(flow_count),0) AS flows FROM flow_aggs WHERE ts >= ? AND direction = 'in'",
         (since,),
     ).fetchone()
     active_attacks = conn.execute(
@@ -146,7 +163,7 @@ def stats_for_prefixes(conn: sqlite3.Connection, prefixes: list[str], window_s: 
     placeholders = ",".join("?" * len(prefixes))
     rows = conn.execute(
         f"""SELECT dst_prefix, SUM(bps) AS bps, SUM(pps) AS pps, SUM(flow_count) AS flow_count
-            FROM flow_aggs WHERE ts >= ? AND dst_prefix IN ({placeholders})
+            FROM flow_aggs WHERE ts >= ? AND direction = 'in' AND dst_prefix IN ({placeholders})
             GROUP BY dst_prefix""",
         [since, *prefixes],
     ).fetchall()
@@ -162,7 +179,7 @@ def top_prefixes(conn: sqlite3.Connection, window_s: int = 30, limit: int = 20) 
     rows = conn.execute(
         """SELECT dst_prefix, SUM(bps) AS bps, SUM(pps) AS pps
            FROM flow_aggs INDEXED BY idx_flow_aggs_ts
-           WHERE ts >= ?
+           WHERE ts >= ? AND direction = 'in'
            GROUP BY dst_prefix ORDER BY bps DESC LIMIT ?""",
         (since, limit),
     ).fetchall()
@@ -174,7 +191,7 @@ def top_flows(conn: sqlite3.Connection, window_s: int = 30, limit: int = 20) -> 
     rows = conn.execute(
         """SELECT dst_prefix, protocol, dst_port, SUM(bps) AS bps, SUM(pps) AS pps, top_src_ips
            FROM flow_aggs INDEXED BY idx_flow_aggs_ts
-           WHERE ts >= ?
+           WHERE ts >= ? AND direction = 'in'
            GROUP BY dst_prefix, protocol, dst_port ORDER BY bps DESC LIMIT ?""",
         (since, limit),
     ).fetchall()
@@ -271,7 +288,7 @@ def protocol_timeseries(conn: sqlite3.Connection, window_s: int = 300, bucket_s:
     rows = conn.execute(
         """SELECT (ts / ?) * ? AS bucket, protocol, SUM(bps) AS bps
            FROM flow_aggs INDEXED BY idx_flow_aggs_ts
-           WHERE ts >= ?
+           WHERE ts >= ? AND direction = 'in'
            GROUP BY bucket, protocol ORDER BY bucket""",
         (bucket_s, bucket_s, since),
     ).fetchall()
@@ -367,16 +384,21 @@ def update_baselines(conn: sqlite3.Connection, updates: list[tuple]) -> None:
 
 
 def prefix_timeseries(conn: sqlite3.Connection, dst_prefix: str, window_s: int = 3600, bucket_s: int = 60) -> list[dict]:
-    """Série temporal de bps/pps de um único prefixo — usado pelo gráfico histórico
+    """Série temporal de bps/pps de um único prefixo, separada por direção
+    (in = tráfego recebido, out = tráfego enviado) — usado pelo gráfico histórico
     do dashboard. Índice por (dst_prefix, ts) é o certo aqui: a busca já é restrita
     a um prefixo, então vale mais ir direto a ele do que escanear por ts."""
     since = int(time.time()) - window_s
     rows = conn.execute(
-        """SELECT (ts / ?) * ? AS bucket, SUM(bps) AS bps, SUM(pps) AS pps
+        """SELECT (ts / ?) * ? AS bucket, direction, SUM(bps) AS bps, SUM(pps) AS pps
            FROM flow_aggs INDEXED BY idx_flow_aggs_prefix
            WHERE dst_prefix = ? AND ts >= ?
-           GROUP BY bucket ORDER BY bucket""",
+           GROUP BY bucket, direction ORDER BY bucket""",
         (bucket_s, bucket_s, dst_prefix, since),
     ).fetchall()
-    return [dict(r) for r in rows]
-    conn.commit()
+    buckets: dict[int, dict] = {}
+    for r in rows:
+        b = buckets.setdefault(r["bucket"], {"ts": r["bucket"], "bps_in": 0, "pps_in": 0, "bps_out": 0, "pps_out": 0})
+        b[f"bps_{r['direction']}"] = r["bps"]
+        b[f"pps_{r['direction']}"] = r["pps"]
+    return [buckets[k] for k in sorted(buckets)]
