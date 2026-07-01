@@ -149,9 +149,9 @@ def cmd_attacks(args: argparse.Namespace, sock_path: str) -> None:
         cmd_attack_detail(args.id, sock_path)
         return
 
-    resp = send_command(sock_path, {"cmd": "attacks", "history": args.history})
+    resp = send_command(sock_path, {"cmd": "attacks", "history": args.history, "window": args.window})
     die_on_error(resp)
-    title = "Histórico de Ataques (24h)" if args.history else "Ataques Ativos"
+    title = f"Histórico de Ataques ({args.window})" if args.history else "Ataques Ativos"
     table = Table(title=title)
     table.add_column("ID")
     table.add_column("Alvo")
@@ -423,6 +423,8 @@ def main() -> None:
 
     p_attacks = sub.add_parser("attacks")
     p_attacks.add_argument("--history", action="store_true")
+    p_attacks.add_argument("--window", choices=["1h", "6h", "24h", "7d"], default="24h",
+                            help="janela do histórico (só com --history, padrão: 24h)")
     p_attacks.add_argument("--id", type=int, default=None,
                             help="mostra detalhamento (com análise de IA, se disponível) de um ataque específico")
     p_attacks.set_defaults(func=cmd_attacks)

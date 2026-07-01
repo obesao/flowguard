@@ -127,7 +127,10 @@ class SocketServer:
 
     async def _cmd_attacks(self, request: dict) -> dict:
         history = bool(request.get("history", False))
-        attacks = await self.daemon.run_read_db(storage.list_attacks, active_only=not history)
+        window_s, _ = storage.pick_window(request.get("window", "24h"))
+        attacks = await self.daemon.run_read_db(
+            storage.list_attacks, active_only=not history, since_s=window_s,
+        )
         return {"ok": True, "attacks": attacks}
 
     async def _cmd_attack_detail(self, request: dict) -> dict:
