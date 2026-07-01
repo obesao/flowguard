@@ -1,0 +1,5 @@
+# whitelist.yaml — endereços/prefixos que o FlowGuard NUNCA deve bloquear ou
+# mitigar (RTBH/FlowSpec), mesmo que cruzem os limiares de detecção.
+# Editável diretamente ou via: flowguard-cli whitelist add|del <prefixo>
+- 8.8.8.8/32
+- 1.1.1.1/32

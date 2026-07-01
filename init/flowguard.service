@@ -1,0 +1,14 @@
+[Unit]
+Description=FlowGuard — BGP Flow Analysis Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/root/flowguard/venv/bin/python3 /root/flowguard/flowguard.py --config /root/flowguard/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

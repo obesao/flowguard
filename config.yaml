@@ -1,0 +1,70 @@
+daemon:
+  pid_file: /var/run/flowguard.pid
+  socket: /var/run/flowguard.sock
+  log_file: /var/log/flowguard.log
+  log_level: info
+collector:
+  netflow_port: 2055
+  sflow_port: 6343
+  ipfix_port: 9995
+  bind_ip: 10.77.77.21
+  sampling_rate: 1000
+  buffer_size: 65536
+database:
+  path: /root/flowguard/db/flows.sqlite
+  retention_days: 7
+  aggregate_interval_s: 30
+detection:
+  ddos_pps_threshold: 100000
+  ddos_bps_threshold: 500000000
+  syn_ratio_threshold: 0.9
+  dns_amp_factor: 10
+  scan_ports_per_sec: 50
+  scan_hosts_per_sec: 100
+  min_attack_duration_s: 10
+  window_short_s: 30
+  window_long_s: 300
+  baseline_enabled: true
+  baseline_window_minutes: 180
+  baseline_min_samples: 120
+  baseline_sigma: 4
+  baseline_min_bps: 5000000
+mitigation:
+  auto_mode: false
+  default_ttl_s: 3600
+  max_rules: 50
+bgp:
+  exabgp_socket: /var/run/exabgp.sock
+  speaker_log_file: /var/log/flowguard-speaker.log
+  router_id: 10.77.77.21
+  local_as: 262620
+  peer_ip: 10.77.77.1
+  rtbh_community: 262620:666
+  nexthop_blackhole: 0.0.0.0
+ai:
+  enabled: true
+  env_file: /root/ai/.env
+  model_events: claude-haiku-4-5-20251001
+  model_report: claude-sonnet-4-6
+  min_severity: high
+  hourly_report: true
+  rate_limit_rpm: 5
+protected_prefixes_file: /root/flowguard/protected_prefixes.yaml
+whitelist_file: /root/flowguard/whitelist.yaml
+threat_feeds:
+  enabled: true
+  update_interval_h: 6
+  cache_file: /root/flowguard/db/threat_ips.txt
+  sources:
+  - https://feodotracker.abuse.ch/downloads/ipblocklist.txt
+  - https://raw.githubusercontent.com/stamparm/ipsum/master/levels/3.txt
+  - https://www.spamhaus.org/drop/drop.txt
+  - https://www.spamhaus.org/drop/edrop.txt
+geoip:
+  asn_db: /usr/share/GeoIP/GeoLite2-ASN.mmdb
+  country_db: /usr/share/GeoIP/GeoLite2-Country.mmdb
+alerts:
+  whatsapp: true
+  wa_dest: 5599XXXXXXXXX
+  min_severity_wa: high
+  webhook_url: ''
