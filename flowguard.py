@@ -19,6 +19,7 @@ import aiohttp
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from ai.client import AIClient
 from analyzer.engine import AMP_PORTS, DetectionEngine
 from api.socket_server import SocketServer
 from bgp.manager import BgpManager
@@ -82,6 +83,7 @@ class FlowGuardDaemon:
         self.socket_server = SocketServer(self)
         self.detector = DetectionEngine(self)
         self.bgp_manager = BgpManager(self)
+        self.ai = AIClient(self.config.get("ai", {}))
         self._shutdown_task: asyncio.Task | None = None
 
     async def run_db(self, func, *args, **kwargs):
@@ -106,6 +108,7 @@ class FlowGuardDaemon:
     def reload_config(self) -> None:
         try:
             self.config = load_config(self.config_path)
+            self.ai = AIClient(self.config.get("ai", {}))
             LOG.info("config recarregado de %s", self.config_path)
         except Exception:
             LOG.exception("falha ao recarregar config")
@@ -113,31 +116,53 @@ class FlowGuardDaemon:
     def dump_stats(self) -> None:
         asyncio.ensure_future(self._dump_stats_async())
 
-    async def notify_attack(self, prefix: str, attack_type: str, severity: str,
+    async def notify_attack(self, attack_id: int, prefix: str, attack_type: str, severity: str,
                              bps: int, pps: int, entry: dict) -> None:
         alerts_cfg = self.config.get("alerts", {})
         severity_rank = {"info": 0, "medium": 1, "high": 2, "critical": 3}
         min_sev_wa = alerts_cfg.get("min_severity_wa", "high")
 
+        ai_analysis = await self._maybe_analyze_attack(attack_id, prefix, attack_type, severity, bps, pps, entry)
+
         if alerts_cfg.get("whatsapp") and severity_rank.get(severity, 0) >= severity_rank.get(min_sev_wa, 2):
             # TODO: integrar com um provedor real de WhatsApp (Evolution API/Z-API/Twilio/etc).
             # Por enquanto só loga — ver wa_dest em config.yaml para o destino pretendido.
             LOG.info(
-                "[WhatsApp pendente] destino=%s: ataque %s em %s (%s) — %.1f Mbps",
+                "[WhatsApp pendente] destino=%s: ataque %s em %s (%s) — %.1f Mbps%s",
                 alerts_cfg.get("wa_dest"), attack_type, prefix, entry.get("customer") or "?", bps / 1e6,
+                f"\nAnálise IA: {ai_analysis}" if ai_analysis else "",
             )
 
         webhook_url = alerts_cfg.get("webhook_url")
         if webhook_url:
             payload = {
-                "dst_prefix": prefix, "attack_type": attack_type, "severity": severity,
-                "bps": bps, "pps": pps, "customer": entry.get("customer", ""),
+                "attack_id": attack_id, "dst_prefix": prefix, "attack_type": attack_type, "severity": severity,
+                "bps": bps, "pps": pps, "customer": entry.get("customer", ""), "ai_analysis": ai_analysis,
             }
             try:
                 async with aiohttp.ClientSession() as session:
                     await session.post(webhook_url, json=payload, timeout=aiohttp.ClientTimeout(total=5))
             except Exception:
                 LOG.exception("falha ao enviar webhook de alerta para %s", webhook_url)
+
+    async def _maybe_analyze_attack(self, attack_id: int, prefix: str, attack_type: str, severity: str,
+                                     bps: int, pps: int, entry: dict) -> str | None:
+        """Gera (se ai.enabled e a severidade qualificar) a análise factual do ataque via
+        IA e já grava em attacks.ai_analysis — assim o CLI só lê o que já foi calculado
+        aqui, em vez de chamar a IA de novo a cada consulta."""
+        if not self.ai.enabled or not self.ai.severity_qualifies(severity):
+            return None
+
+        min_duration = self.config.get("detection", {}).get("min_attack_duration_s", 10)
+        ts_start = int(time.time()) - min_duration - self.config["database"]["aggregate_interval_s"]
+        detail = await self.run_read_db(storage.attack_detail, prefix, ts_start, None)
+        analysis = await self.ai.analyze_attack(
+            attack_type, severity, prefix, entry.get("customer") or "", bps, pps, detail,
+        )
+        if analysis:
+            await self.run_db(storage.save_ai_analysis, self.conn, attack_id, analysis)
+            LOG.info("[Análise IA] ataque #%s (%s em %s): %s", attack_id, attack_type, prefix, analysis)
+        return analysis
 
     async def _dump_stats_async(self) -> None:
         interval = self.config["database"]["aggregate_interval_s"]
@@ -283,8 +308,25 @@ class FlowGuardDaemon:
         await self.detector.evaluate_cycle(now, proto_totals_bps, amp_totals_bps)
         await self.bgp_manager.expire_cycle()
 
+    async def ai_report_loop(self) -> None:
+        """Resumo executivo horário via IA dos ataques da última hora — só roda se
+        ai.enabled e ai.hourly_report estiverem ligados (ver run())."""
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=3600)
+                break
+            except asyncio.TimeoutError:
+                pass
+            attacks = await self.run_read_db(storage.list_attacks, False, 3600)
+            summary = await self.ai.hourly_summary(attacks)
+            if summary:
+                LOG.info("[Relatório horário IA] %s", summary)
+
     async def run(self) -> None:
-        await asyncio.gather(self.udp_listener(), self.aggregator_loop(), self.socket_server.start())
+        tasks = [self.udp_listener(), self.aggregator_loop(), self.socket_server.start()]
+        if self.ai.enabled and self.ai.hourly_report:
+            tasks.append(self.ai_report_loop())
+        await asyncio.gather(*tasks)
         if self._shutdown_task:
             await self._shutdown_task
 

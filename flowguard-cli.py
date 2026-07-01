@@ -127,6 +127,10 @@ def cmd_flows(args: argparse.Namespace, sock_path: str) -> None:
 
 
 def cmd_attacks(args: argparse.Namespace, sock_path: str) -> None:
+    if args.id is not None:
+        cmd_attack_detail(args.id, sock_path)
+        return
+
     resp = send_command(sock_path, {"cmd": "attacks", "history": args.history})
     die_on_error(resp)
     title = "Histórico de Ataques (24h)" if args.history else "Ataques Ativos"
@@ -137,15 +141,55 @@ def cmd_attacks(args: argparse.Namespace, sock_path: str) -> None:
     table.add_column("Severidade")
     table.add_column("Pico")
     table.add_column("Mitigado")
+    table.add_column("IA")
     for row in resp["attacks"]:
         table.add_row(
             str(row["id"]), row["dst_prefix"], row["attack_type"], row["severity"],
             fmt_bps(row["bps_peak"] or 0), "sim" if row["mitigated"] else "não",
+            "sim" if row.get("ai_analysis") else "-",
         )
     if not resp["attacks"]:
         console.print(f"[green]{title}: nenhum registro.[/green]")
     else:
         console.print(table)
+        console.print("[dim]use 'flowguard-cli attacks --id <ID>' para ver o detalhamento e a análise de IA[/dim]")
+
+
+def cmd_attack_detail(attack_id: int, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "attack_detail", "attack_id": attack_id})
+    die_on_error(resp)
+    attack, detail = resp["attack"], resp["detail"]
+
+    header = (
+        f"[bold]{attack['attack_type']}[/bold] em {attack['dst_prefix']} "
+        f"({attack.get('customer') or '?'})\n"
+        f"Severidade: {attack['severity']}  |  Pico: {fmt_bps(attack['bps_peak'] or 0)}, "
+        f"{attack['pps_peak'] or 0:,} pps\n"
+        f"Status: {'encerrado' if attack['ts_end'] else '[red]ativo[/red]'}"
+        f"{'  |  Alvo (host): ' + attack['target_host'] if attack.get('target_host') else ''}"
+    )
+    console.print(Panel(header, title=f"Ataque #{attack_id}"))
+
+    ports_table = Table(title="Portas/protocolos dominantes")
+    ports_table.add_column("Protocolo")
+    ports_table.add_column("Porta")
+    ports_table.add_column("Tráfego")
+    for p in detail["by_port"]:
+        ports_table.add_row(str(p["protocol"]), str(p["dst_port"]), fmt_bps(p["bps"]))
+    console.print(ports_table)
+
+    sources_table = Table(title="Principais IPs de origem")
+    sources_table.add_column("IP")
+    sources_table.add_column("Ocorrências")
+    for s in detail["top_sources"]:
+        sources_table.add_row(s["ip"], str(s["occurrences"]))
+    console.print(sources_table)
+
+    if attack.get("ai_analysis"):
+        console.print(Panel(attack["ai_analysis"], title="Análise de IA", border_style="cyan"))
+    else:
+        console.print("[dim]sem análise de IA para este ataque (desativada, severidade abaixo do "
+                       "limiar configurado, ou rate limit atingido no momento da detecção).[/dim]")
 
 
 def cmd_rules(args: argparse.Namespace, sock_path: str) -> None:
@@ -348,6 +392,8 @@ def main() -> None:
 
     p_attacks = sub.add_parser("attacks")
     p_attacks.add_argument("--history", action="store_true")
+    p_attacks.add_argument("--id", type=int, default=None,
+                            help="mostra detalhamento (com análise de IA, se disponível) de um ataque específico")
     p_attacks.set_defaults(func=cmd_attacks)
 
     sub.add_parser("rules").set_defaults(func=cmd_rules)

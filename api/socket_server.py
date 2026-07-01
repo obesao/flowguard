@@ -130,6 +130,18 @@ class SocketServer:
         attacks = await self.daemon.run_read_db(storage.list_attacks, active_only=not history)
         return {"ok": True, "attacks": attacks}
 
+    async def _cmd_attack_detail(self, request: dict) -> dict:
+        attack_id = request.get("attack_id")
+        if not attack_id:
+            return {"ok": False, "error": "attack_id obrigatório"}
+        attack = await self.daemon.run_read_db(storage.get_attack, int(attack_id))
+        if not attack:
+            return {"ok": False, "error": f"ataque #{attack_id} não encontrado"}
+        detail = await self.daemon.run_read_db(
+            storage.attack_detail, attack["dst_prefix"], attack["ts_start"], attack["ts_end"],
+        )
+        return {"ok": True, "attack": attack, "detail": detail}
+
     async def _cmd_rules(self, request: dict) -> dict:
         rules = await self.daemon.run_read_db(storage.list_flowspec_rules)
         return {"ok": True, "rules": rules}

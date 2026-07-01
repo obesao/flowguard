@@ -409,16 +409,21 @@ def list_open_attacks_by_key(conn: sqlite3.Connection) -> dict[tuple, dict]:
 
 
 def apply_attack_changes(conn: sqlite3.Connection, to_insert: list[dict],
-                          to_update: list[tuple], to_close: list[tuple]) -> None:
+                          to_update: list[tuple], to_close: list[tuple]) -> list[int]:
     """Aplica todas as mudanças de um ciclo de detecção numa única transação —
-    evita dezenas de commits individuais por ciclo (1 por prefixo x tipo de ataque)."""
+    evita dezenas de commits individuais por ciclo (1 por prefixo x tipo de ataque).
+    Retorna os ids inseridos, na mesma ordem de to_insert — quem chama usa isso pra
+    casar cada novo ataque com sua entrada correspondente em to_notify (1:1, ver
+    DetectionEngine._evaluate) sem precisar de outro SELECT."""
+    inserted_ids: list[int] = []
     for item in to_insert:
-        conn.execute(
+        cur = conn.execute(
             """INSERT INTO attacks (ts_start, dst_prefix, customer, attack_type, severity, bps_peak, pps_peak)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (item["ts_start"], item["dst_prefix"], item["customer"], item["attack_type"],
              item["severity"], item["bps_peak"], item["pps_peak"]),
         )
+        inserted_ids.append(cur.lastrowid)
     for attack_id, bps, pps in to_update:
         conn.execute(
             "UPDATE attacks SET bps_peak = MAX(bps_peak, ?), pps_peak = MAX(pps_peak, ?) WHERE id = ?",
@@ -432,6 +437,7 @@ def apply_attack_changes(conn: sqlite3.Connection, to_insert: list[dict],
             "UPDATE attacks SET ts_end = ?, target_host = ? WHERE id = ?", (ts_end, target_host, attack_id)
         )
     conn.commit()
+    return inserted_ids
 
 
 def get_baseline(conn: sqlite3.Connection, dst_prefix: str) -> dict | None:

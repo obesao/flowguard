@@ -132,18 +132,23 @@ class DetectionEngine:
             if baseline_enabled and not (volumetric_hit or any_amp_hit or anomaly_hit):
                 baseline_updates.append((prefix, total_bps, total_pps, baseline_alpha, now))
 
+        inserted_ids: list[int] = []
         if to_insert or to_update or to_close:
-            await self.daemon.run_db(storage.apply_attack_changes, self.daemon.conn, to_insert, to_update, to_close)
+            inserted_ids = await self.daemon.run_db(
+                storage.apply_attack_changes, self.daemon.conn, to_insert, to_update, to_close
+            )
 
         if baseline_updates:
             await self.daemon.run_db(storage.update_baselines, self.daemon.conn, baseline_updates)
 
-        for prefix, attack_type, severity, bps, pps, entry in to_notify:
+        # to_insert e to_notify crescem em lockstep (1 to_notify.append por to_insert.append,
+        # ver _evaluate) — dá pra casar attack_id com sua notificação por posição, sem SELECT.
+        for attack_id, (prefix, attack_type, severity, bps, pps, entry) in zip(inserted_ids, to_notify):
             LOG.warning(
                 "ATAQUE DETECTADO: %s em %s (%s) — %.1f Mbps, %s pps",
                 attack_type, prefix, entry.get("customer") or "?", bps / 1e6, f"{pps:,}".replace(",", "."),
             )
-            await self.daemon.notify_attack(prefix, attack_type, severity, bps, pps, entry)
+            await self.daemon.notify_attack(attack_id, prefix, attack_type, severity, bps, pps, entry)
 
         for prefix, attack_type, bps_peak in to_close_log(to_close, open_attacks):
             LOG.info("ataque encerrado: %s em %s (pico %.1f Mbps)", attack_type, prefix, bps_peak / 1e6)
