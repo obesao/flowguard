@@ -22,12 +22,13 @@ detection:
   scan_ports_per_sec: 50
   scan_hosts_per_sec: 100
   min_attack_duration_s: 10
+  baseline_min_duration_s: 120
   window_short_s: 30
   window_long_s: 300
   baseline_enabled: true
   baseline_window_minutes: 180
   baseline_min_samples: 120
-  baseline_sigma: 4
+  baseline_sigma: 8
   baseline_min_bps: 5000000
 mitigation:
   auto_mode: false

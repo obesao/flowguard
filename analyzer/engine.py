@@ -60,6 +60,12 @@ class DetectionEngine:
         protected = cfg.get("protected_prefixes", [])
         whitelist = cfg.get("whitelist", [])
         min_duration = detection_cfg.get("min_attack_duration_s", 10)
+        # duração mínima própria pra anomalia de baseline — separada de min_duration
+        # porque esse detector reage a desvio estatístico de tráfego normal (ruidoso
+        # por natureza), não a um limiar fixo cruzado por um ataque real e óbvio como
+        # ddos_volumetrico/amplificação; exigir mais tempo sustentado aqui filtra picos
+        # curtos de tráfego legítimo sem atrasar a detecção dos ataques de alta confiança.
+        baseline_min_duration = detection_cfg.get("baseline_min_duration_s", min_duration)
         default_bps_threshold = detection_cfg.get("ddos_bps_threshold", 500_000_000)
         default_pps_threshold = detection_cfg.get("ddos_pps_threshold", 100_000)
 
@@ -127,7 +133,7 @@ class DetectionEngine:
                         and total_bps > baseline["bps_mean"] * 1.5
                     )
                     self._evaluate(now, prefix, "anomalia_baseline", "high", anomaly_hit, total_bps, total_pps,
-                                    min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
+                                    baseline_min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
 
             if baseline_enabled and not (volumetric_hit or any_amp_hit or anomaly_hit):
                 baseline_updates.append((prefix, total_bps, total_pps, baseline_alpha, now))
