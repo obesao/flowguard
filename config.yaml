@@ -12,7 +12,7 @@ collector:
   buffer_size: 65536
 database:
   path: /root/flowguard/db/flows.sqlite
-  retention_days: 7
+  retention_days: 14
   aggregate_interval_s: 30
 detection:
   ddos_pps_threshold: 100000
