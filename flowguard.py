@@ -153,16 +153,20 @@ class FlowGuardDaemon:
         if not self.ai.enabled or not self.ai.severity_qualifies(severity):
             return None
 
-        min_duration = self.config.get("detection", {}).get("min_attack_duration_s", 10)
-        ts_start = int(time.time()) - min_duration - self.config["database"]["aggregate_interval_s"]
-        detail = await self.run_read_db(storage.attack_detail, prefix, ts_start, None)
-        analysis = await self.ai.analyze_attack(
-            attack_type, severity, prefix, entry.get("customer") or "", bps, pps, detail,
-        )
-        if analysis:
-            await self.run_db(storage.save_ai_analysis, self.conn, attack_id, analysis)
-            LOG.info("[Análise IA] ataque #%s (%s em %s): %s", attack_id, attack_type, prefix, analysis)
-        return analysis
+        try:
+            min_duration = self.config.get("detection", {}).get("min_attack_duration_s", 10)
+            ts_start = int(time.time()) - min_duration - self.config["database"]["aggregate_interval_s"]
+            detail = await self.run_read_db(storage.attack_detail, prefix, ts_start, None)
+            analysis = await self.ai.analyze_attack(
+                attack_type, severity, prefix, entry.get("customer") or "", bps, pps, detail,
+            )
+            if analysis:
+                await self.run_db(storage.save_ai_analysis, self.conn, attack_id, analysis)
+                LOG.info("[Análise IA] ataque #%s (%s em %s): %s", attack_id, attack_type, prefix, analysis)
+            return analysis
+        except Exception:
+            LOG.exception("falha ao gerar análise de IA para o ataque #%s — seguindo sem ela", attack_id)
+            return None
 
     async def _dump_stats_async(self) -> None:
         interval = self.config["database"]["aggregate_interval_s"]
@@ -210,13 +214,16 @@ class FlowGuardDaemon:
                 break
             except asyncio.TimeoutError:
                 pass
-            await self._aggregate_once()
-            self._cycle_count += 1
-            cycles_per_hour = max(1, int(3600 / interval))
-            if self._cycle_count % cycles_per_hour == 0:
-                pruned = await self.run_db(storage.prune_old_aggs, self.conn, retention_days)
-                if pruned:
-                    LOG.info("retenção: %d agregados antigos removidos", pruned)
+            try:
+                await self._aggregate_once()
+                self._cycle_count += 1
+                cycles_per_hour = max(1, int(3600 / interval))
+                if self._cycle_count % cycles_per_hour == 0:
+                    pruned = await self.run_db(storage.prune_old_aggs, self.conn, retention_days)
+                    if pruned:
+                        LOG.info("retenção: %d agregados antigos removidos", pruned)
+            except Exception:
+                LOG.exception("falha no ciclo de agregação/detecção — pulando este ciclo, coleta continua")
 
     async def _aggregate_once(self) -> None:
         records = []
