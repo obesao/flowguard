@@ -69,6 +69,24 @@ def fmt_bps(bps: float) -> str:
     return f"{bps:.0f} bps"
 
 
+def fmt_bytes(n: float) -> str:
+    n = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
+def fmt_duration(seconds: int) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
 PROTO_NAMES = {6: "TCP", 17: "UDP", 1: "ICMP"}
 
 
@@ -159,6 +177,7 @@ def cmd_attack_detail(attack_id: int, sock_path: str) -> None:
     resp = send_command(sock_path, {"cmd": "attack_detail", "attack_id": attack_id})
     die_on_error(resp)
     attack, detail = resp["attack"], resp["detail"]
+    summary = detail.get("summary", {})
 
     header = (
         f"[bold]{attack['attack_type']}[/bold] em {attack['dst_prefix']} "
@@ -166,7 +185,11 @@ def cmd_attack_detail(attack_id: int, sock_path: str) -> None:
         f"Severidade: {attack['severity']}  |  Pico: {fmt_bps(attack['bps_peak'] or 0)}, "
         f"{attack['pps_peak'] or 0:,} pps\n"
         f"Status: {'encerrado' if attack['ts_end'] else '[red]ativo[/red]'}"
-        f"{'  |  Alvo (host): ' + attack['target_host'] if attack.get('target_host') else ''}"
+        f"{'  |  Alvo (host): ' + attack['target_host'] if attack.get('target_host') else ''}\n"
+        f"Duração: {fmt_duration(summary.get('duration_s', 0))}  |  "
+        f"Total: {fmt_bytes(summary.get('total_bytes', 0))}, "
+        f"{summary.get('total_packets', 0):,} pacotes, "
+        f"{summary.get('total_flows', 0):,} flows"
     )
     console.print(Panel(header, title=f"Ataque #{attack_id}"))
 
@@ -174,8 +197,16 @@ def cmd_attack_detail(attack_id: int, sock_path: str) -> None:
     ports_table.add_column("Protocolo")
     ports_table.add_column("Porta")
     ports_table.add_column("Tráfego")
+    ports_table.add_column("Bytes totais")
+    ports_table.add_column("Pacotes totais")
+    ports_table.add_column("Tam. médio pkt")
+    ports_table.add_column("Flows")
     for p in detail["by_port"]:
-        ports_table.add_row(str(p["protocol"]), str(p["dst_port"]), fmt_bps(p["bps"]))
+        ports_table.add_row(
+            str(p["protocol"]), str(p["dst_port"]), fmt_bps(p["bps"]),
+            fmt_bytes(p.get("total_bytes", 0)), f"{p.get('total_packets', 0):,}",
+            f"{p.get('avg_pkt_size', 0)} B", f"{p.get('flow_count', 0):,}",
+        )
     console.print(ports_table)
 
     sources_table = Table(title="Principais IPs de origem")

@@ -137,10 +137,14 @@ class SocketServer:
         attack = await self.daemon.run_read_db(storage.get_attack, int(attack_id))
         if not attack:
             return {"ok": False, "error": f"ataque #{attack_id} não encontrado"}
+        interval_s = self.daemon.config["database"]["aggregate_interval_s"]
         detail = await self.daemon.run_read_db(
-            storage.attack_detail, attack["dst_prefix"], attack["ts_start"], attack["ts_end"],
+            storage.attack_detail, attack["dst_prefix"], attack["ts_start"], attack["ts_end"], 20, interval_s,
         )
-        return {"ok": True, "attack": attack, "detail": detail}
+        timeseries = await self.daemon.run_read_db(
+            storage.attack_timeseries, attack["dst_prefix"], attack["ts_start"], attack["ts_end"],
+        )
+        return {"ok": True, "attack": attack, "detail": detail, "timeseries": timeseries}
 
     async def _cmd_rules(self, request: dict) -> dict:
         rules = await self.daemon.run_read_db(storage.list_flowspec_rules)

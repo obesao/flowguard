@@ -343,7 +343,7 @@ def get_attack(conn: sqlite3.Connection, attack_id: int) -> dict | None:
 
 
 def attack_detail(conn: sqlite3.Connection, dst_prefix: str, ts_start: int, ts_end: int | None,
-                   limit: int = 10) -> dict:
+                   limit: int = 10, interval_s: int = 30) -> dict:
     """Detalhamento factual (sem IA) de um ataque: tráfego por protocolo/porta e IPs de
     origem observados na janela do ataque — derivado de flow_aggs, já que a coluna
     attacks.top_sources nunca é preenchida pelo detector (ele só vê totais agregados,
@@ -354,23 +354,39 @@ def attack_detail(conn: sqlite3.Connection, dst_prefix: str, ts_start: int, ts_e
     Busca linhas individuais (não agregadas em SQL) porque SUM(bps) por porta precisa
     somar todos os ciclos, e top_src_ips é uma coluna não-agregada — misturar os dois
     num único GROUP BY faria o SQLite devolver o top_src_ips de um ciclo arbitrário só,
-    descartando as origens dos outros ciclos da janela do ataque."""
+    descartando as origens dos outros ciclos da janela do ataque.
+
+    Bytes/pacotes totais são estimados a partir de bps/pps (taxas por ciclo), não
+    armazenados diretamente — daí a necessidade de interval_s (aggregate_interval_s do
+    config) pra converter taxa em volume: bytes ≈ bps * interval_s / 8 por ciclo."""
     until = ts_end or int(time.time())
     rows = conn.execute(
-        """SELECT protocol, dst_port, bps, pps, top_src_ips, top_dst_ips
+        """SELECT protocol, dst_port, bps, pps, flow_count, top_src_ips, top_dst_ips
            FROM flow_aggs INDEXED BY idx_flow_aggs_prefix
            WHERE dst_prefix = ? AND direction = 'in' AND ts BETWEEN ? AND ?""",
         (dst_prefix, ts_start, until),
     ).fetchall()
 
     by_port: dict[tuple, dict] = {}
+    total_bps = total_pps = total_flows = 0
     for r in rows:
         key = (r["protocol"], r["dst_port"])
-        agg = by_port.setdefault(key, {"protocol": r["protocol"], "dst_port": r["dst_port"], "bps": 0, "pps": 0})
+        agg = by_port.setdefault(
+            key, {"protocol": r["protocol"], "dst_port": r["dst_port"], "bps": 0, "pps": 0, "flow_count": 0}
+        )
         agg["bps"] += r["bps"]
         agg["pps"] += r["pps"]
+        agg["flow_count"] += r["flow_count"]
+        total_bps += r["bps"]
+        total_pps += r["pps"]
+        total_flows += r["flow_count"]
     top_ports = sorted(by_port.values(), key=lambda p: p["bps"], reverse=True)[:limit]
     top_keys = {(p["protocol"], p["dst_port"]) for p in top_ports}
+
+    for p in top_ports:
+        p["total_bytes"] = p["bps"] * interval_s // 8
+        p["total_packets"] = p["pps"] * interval_s
+        p["avg_pkt_size"] = p["total_bytes"] // p["total_packets"] if p["total_packets"] else 0
 
     # só conta origens/hosts das portas/protocolos que de fato dominam o ataque
     # (top_ports) — senão tráfego legítimo do cliente em outras portas, na mesma
@@ -390,6 +406,13 @@ def attack_detail(conn: sqlite3.Connection, dst_prefix: str, ts_start: int, ts_e
         "by_port": top_ports,
         "top_sources": [{"ip": ip, "occurrences": n} for ip, n in top_sources],
         "top_hosts": [{"ip": ip, "occurrences": n} for ip, n in top_hosts],
+        "summary": {
+            "duration_s": until - ts_start,
+            "cycles": len(rows),
+            "total_bytes": total_bps * interval_s // 8,
+            "total_packets": total_pps * interval_s,
+            "total_flows": total_flows,
+        },
     }
 
 
@@ -504,3 +527,23 @@ def prefix_timeseries(conn: sqlite3.Connection, dst_prefix: str, window_s: int =
         b[f"bps_{r['direction']}"] = r["bps"]
         b[f"pps_{r['direction']}"] = r["pps"]
     return [buckets[k] for k in sorted(buckets)]
+
+
+def attack_timeseries(conn: sqlite3.Connection, dst_prefix: str, ts_start: int, ts_end: int | None,
+                       target_points: int = 90) -> list[dict]:
+    """Série temporal de bps/pps de um prefixo numa janela ABSOLUTA (ts_start..ts_end) —
+    diferente de prefix_timeseries, que é sempre relativa a 'agora'. Usada pra desenhar a
+    linha do tempo de um ataque específico, inclusive um já encerrado há dias (dentro da
+    retenção). bucket_s é escolhido pra manter a quantidade de pontos legível independente
+    da duração real do ataque (segundos a horas)."""
+    until = ts_end or int(time.time())
+    span = max(1, until - ts_start)
+    bucket_s = max(30, span // target_points)
+    rows = conn.execute(
+        """SELECT (ts / ?) * ? AS bucket, SUM(bps) AS bps, SUM(pps) AS pps
+           FROM flow_aggs INDEXED BY idx_flow_aggs_prefix
+           WHERE dst_prefix = ? AND direction = 'in' AND ts BETWEEN ? AND ?
+           GROUP BY bucket ORDER BY bucket""",
+        (bucket_s, bucket_s, dst_prefix, ts_start, until),
+    ).fetchall()
+    return [{"ts": r["bucket"], "bps": r["bps"], "pps": r["pps"]} for r in rows]
