@@ -167,8 +167,9 @@ class DetectionEngine:
             )
             await self.daemon.notify_attack(attack_id, prefix, attack_type, severity, bps, pps, entry)
 
-        for prefix, attack_type, bps_peak in to_close_log(to_close, open_attacks):
+        for attack_id, prefix, attack_type, severity, bps_peak in to_close_log(to_close, open_attacks):
             LOG.info("ataque encerrado: %s em %s (pico %.1f Mbps)", attack_type, prefix, bps_peak / 1e6)
+            await self.daemon.notify_attack_closed(attack_id, prefix, attack_type, severity, bps_peak)
 
     def _evaluate(self, now, prefix, attack_type, severity, triggered, bps, pps, min_duration, entry,
                   open_attacks, to_insert, to_update, to_close, to_notify) -> None:
@@ -199,4 +200,5 @@ def to_close_log(to_close: list[tuple], open_attacks: dict[tuple, dict]):
         if key is None:
             continue
         prefix, attack_type = key
-        yield prefix, attack_type, open_attacks[key]["bps_peak"]
+        row = open_attacks[key]
+        yield attack_id, prefix, attack_type, row["severity"], row["bps_peak"]

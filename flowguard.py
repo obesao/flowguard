@@ -26,6 +26,7 @@ from bgp.manager import BgpManager
 from collector import configio, storage
 from collector.netflow import TemplateStore, parse_packet
 from collector.prefixes import match_protected_prefix, resolve_dst_prefix
+import notifier
 
 LOG = logging.getLogger("flowguard")
 
@@ -116,22 +117,37 @@ class FlowGuardDaemon:
     def dump_stats(self) -> None:
         asyncio.ensure_future(self._dump_stats_async())
 
+    def _wa_severity_ok(self, severity: str) -> bool:
+        alerts_cfg = self.config.get("alerts", {})
+        if not alerts_cfg.get("whatsapp"):
+            return False
+        severity_rank = {"info": 0, "medium": 1, "high": 2, "critical": 3}
+        min_sev_wa = alerts_cfg.get("min_severity_wa", "high")
+        return severity_rank.get(severity, 0) >= severity_rank.get(min_sev_wa, 2)
+
+    async def _send_whatsapp(self, message: str) -> None:
+        alerts_cfg = self.config.get("alerts", {})
+        loop = asyncio.get_running_loop()
+        ok = await loop.run_in_executor(
+            None, notifier.send_whatsapp, alerts_cfg.get("wa_dest"), alerts_cfg.get("wa_apikey"), message,
+        )
+        if not ok:
+            LOG.warning("falha ao enviar alerta WhatsApp")
+
     async def notify_attack(self, attack_id: int, prefix: str, attack_type: str, severity: str,
                              bps: int, pps: int, entry: dict) -> None:
         alerts_cfg = self.config.get("alerts", {})
-        severity_rank = {"info": 0, "medium": 1, "high": 2, "critical": 3}
-        min_sev_wa = alerts_cfg.get("min_severity_wa", "high")
 
         ai_analysis = await self._maybe_analyze_attack(attack_id, prefix, attack_type, severity, bps, pps, entry)
 
-        if alerts_cfg.get("whatsapp") and severity_rank.get(severity, 0) >= severity_rank.get(min_sev_wa, 2):
-            # TODO: integrar com um provedor real de WhatsApp (Evolution API/Z-API/Twilio/etc).
-            # Por enquanto só loga — ver wa_dest em config.yaml para o destino pretendido.
-            LOG.info(
-                "[WhatsApp pendente] destino=%s: ataque %s em %s (%s) — %.1f Mbps%s",
-                alerts_cfg.get("wa_dest"), attack_type, prefix, entry.get("customer") or "?", bps / 1e6,
-                f"\nAnálise IA: {ai_analysis}" if ai_analysis else "",
+        if self._wa_severity_ok(severity):
+            message = (
+                f"🚨 FlowGuard: ataque {attack_type} em {prefix}"
+                + (f" ({entry['customer']})" if entry.get("customer") else "")
+                + f"\n{bps / 1e6:.1f} Mbps, {pps:,} pps — severidade {severity}".replace(",", ".")
+                + (f"\nAnálise: {ai_analysis}" if ai_analysis else "")
             )
+            await self._send_whatsapp(message)
 
         webhook_url = alerts_cfg.get("webhook_url")
         if webhook_url:
@@ -144,6 +160,13 @@ class FlowGuardDaemon:
                     await session.post(webhook_url, json=payload, timeout=aiohttp.ClientTimeout(total=5))
             except Exception:
                 LOG.exception("falha ao enviar webhook de alerta para %s", webhook_url)
+
+    async def notify_attack_closed(self, attack_id: int, prefix: str, attack_type: str, severity: str,
+                                    bps_peak: int) -> None:
+        if not self._wa_severity_ok(severity):
+            return
+        message = f"✅ FlowGuard: ataque {attack_type} em {prefix} encerrado (pico {bps_peak / 1e6:.1f} Mbps)"
+        await self._send_whatsapp(message)
 
     async def _maybe_analyze_attack(self, attack_id: int, prefix: str, attack_type: str, severity: str,
                                      bps: int, pps: int, entry: dict) -> str | None:

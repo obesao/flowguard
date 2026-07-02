@@ -14,6 +14,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+import sys
 import time
 from pathlib import Path
 
@@ -21,9 +22,13 @@ import yaml
 from netmiko import ConnectHandler
 from netmiko.exceptions import NetmikoAuthenticationException, NetmikoTimeoutException
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import notifier
+
 LOG = logging.getLogger("flowguard.warmode")
 
 DEFAULT_CONFIG_PATH = "/root/flowguard/warmode.yaml"
+FLOWGUARD_CONFIG_PATH = "/root/flowguard/config.yaml"
 AUDIT_LOG_PATH = "/var/log/flowguard-warmode-audit.jsonl"
 
 
@@ -140,6 +145,25 @@ def _audit(trigger: str, results: list[dict]) -> None:
         LOG.exception("falha ao gravar audit log do modo guerra")
 
 
+def _notify_whatsapp(trigger: str, results: list[dict]) -> None:
+    """Lê alerts.whatsapp direto do config.yaml do FlowGuard (só leitura de arquivo,
+    não depende do daemon/socket estar de pé — mantém o executor standalone)."""
+    try:
+        alerts_cfg = (yaml.safe_load(Path(FLOWGUARD_CONFIG_PATH).read_text(encoding="utf-8")) or {}).get("alerts", {})
+    except OSError:
+        return
+    if not alerts_cfg.get("whatsapp"):
+        return
+    ok_devices = [r["device"] for r in results if r["ok"]]
+    fail_devices = [r["device"] for r in results if not r["ok"]]
+    message = f"🚨 MODO GUERRA acionado (gatilho: {trigger})"
+    if ok_devices:
+        message += f"\nOK: {', '.join(ok_devices)}"
+    if fail_devices:
+        message += f"\nFALHA: {', '.join(fail_devices)}"
+    notifier.send_whatsapp(alerts_cfg.get("wa_dest"), alerts_cfg.get("wa_apikey"), message)
+
+
 def list_devices(config_path: str = DEFAULT_CONFIG_PATH) -> list[dict]:
     """Metadados dos equipamentos configurados, sem senha — pra exibir na UI antes
     de disparar de fato."""
@@ -168,6 +192,7 @@ def run_war_mode(config_path: str = DEFAULT_CONFIG_PATH, timeout: float = 25.0, 
     LOG.warning("MODO GUERRA acionado (%s): %s", trigger,
                 [{"device": r["device"], "ok": r["ok"]} for r in results])
     _audit(trigger, results)
+    _notify_whatsapp(trigger, results)
     return results
 
 

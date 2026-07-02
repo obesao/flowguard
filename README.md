@@ -56,6 +56,25 @@ pipeline automático de eventos ainda, só análise sob demanda.
 
 ## Changelog
 
+### v1.6.0 — 2026-07-02 — Alertas via WhatsApp (CallMeBot)
+- `notifier.py` (novo) implementa o envio real de WhatsApp via CallMeBot
+  (grátis, sem conta business — só requer ativar o bot uma vez no número de
+  destino e gerar uma apikey). Substitui o placeholder "[WhatsApp pendente]"
+  que só logava a mensagem sem enviar nada.
+- `alerts.wa_apikey` (novo, `config.yaml`) complementa `alerts.wa_dest`/
+  `min_severity_wa` já existentes.
+- Ataque detectado (`notify_attack`, já existia) e ataque encerrado
+  (`notify_attack_closed`, novo — antes só logava) disparam WhatsApp quando a
+  severidade atinge `min_severity_wa`.
+- Modo Guerra: `run_war_mode` agora avisa por WhatsApp ao final de cada
+  execução (equipamentos OK/falha), lendo `alerts.whatsapp`/`wa_dest`/
+  `wa_apikey` direto do `config.yaml` — continua standalone, não depende do
+  `flowguard.service` estar de pé.
+- Limitação conhecida da CallMeBot: a API responde 200 OK mesmo com apikey
+  inválida (não há como distinguir "aceito" de "credencial errada" só pelo
+  HTTP status) — testar com credenciais reais e confirmar recebimento no
+  celular antes de confiar no alerta em produção.
+
 ### v1.5.0 — 2026-07-02 — Configurações via portal: liga/desliga tipos de ataque + limpar ativos
 - `detection_toggles.yaml` (novo, separado do `config.yaml` — mesmo motivo de
   `protected_prefixes`/`whitelist`: editar via portal não pode reescrever o

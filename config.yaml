@@ -68,5 +68,6 @@ geoip:
 alerts:
   whatsapp: true
   wa_dest: 5599XXXXXXXXX
+  wa_apikey: ''
   min_severity_wa: high
   webhook_url: ''
