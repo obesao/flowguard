@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.1.1**
+**Versão atual: v1.2.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -49,6 +49,19 @@ pipeline automático de eventos ainda, só análise sob demanda.
 | `tools/synth_netflow.py` | Gerador de NetFlow sintético para testes |
 
 ## Changelog
+
+### v1.2.0 — 2026-07-02 — Indicador de status da sessão BGP (Up/Down)
+- `bgp/speaker.py` passou a decodificar as notificações `neighbor-changes` que
+  o ExaBGP já mandava (e eram descartadas) pra saber se a sessão com o
+  roteador está `up`, `down` ou só `connected` (TCP ok, BGP ainda não
+  estabelecido) — exposto via nova ação `status` no socket do speaker.
+- `bgp/manager.py` ganhou `status()`; daemon expõe como comando `bgp_status`
+  (e dentro do `dashboard` agregado).
+- `flowguard-cli status` e o monitor interativo mostram "BGP (ExaBGP): Up"
+  ou "Down/Idle".
+- Precisou de `neighbor-changes;` no bloco `api` do `exabgp.conf` (não
+  versionado neste repo, é config de sistema) — documentado em
+  `/root/flowguard.md`.
 
 ### v1.1.1 — 2026-07-02 — Renumeração do link com o roteador de borda
 - IP do link ponto-a-ponto com o roteador de borda mudou (endereço interno
