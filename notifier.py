@@ -1,31 +1,29 @@
-"""Envio de alertas via WhatsApp usando a CallMeBot API (gratuita, sem conta business —
-https://www.callmebot.com/blog/free-api-whatsapp-messages/). GET simples, timeout curto,
-silencioso em caso de falha, sem retry — mesmo padrão dos webhooks já usados no projeto."""
+"""Envio de alertas via WhatsApp usando a Evolution API self-hosted (ver
+/root/evolution-api/, docker-compose com Postgres+Redis). Destino (grupo ou
+número) é compartilhado com o ClientGuard — só existe UMA sessão WhatsApp real,
+configurável pelo portal ("Alertas via WhatsApp" na aba Configuração)."""
 
 from __future__ import annotations
 
 import logging
-import urllib.parse
-import urllib.request
-from urllib.error import URLError
+import sys
 
 LOG = logging.getLogger("flowguard.notifier")
 
-CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
+if "/root/evolution-api" not in sys.path:
+    sys.path.insert(0, "/root/evolution-api")
 
 
-def send_whatsapp(phone: str, apikey: str, message: str, timeout: float = 10.0) -> bool:
-    """Envia `message` para `phone` (DDI + número, só dígitos, ex. "5599999999999")
-    via CallMeBot. Requer ativação prévia do bot naquele número e a apikey gerada
-    nesse processo (ver README) — sem isso a CallMeBot rejeita silenciosamente."""
-    if not phone or not apikey or not message:
-        return False
-    params = urllib.parse.urlencode({"phone": phone, "text": message, "apikey": apikey})
-    url = f"{CALLMEBOT_URL}?{params}"
+def send_whatsapp(message: str) -> bool:
+    """Manda `message` pro destino configurado no portal (grupo/número salvo em
+    /root/evolution-api/notify.yaml) — silencioso em caso de falha, sem retry,
+    mesmo padrão dos outros notifiers do projeto."""
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            resp.read()
-        return True
-    except (URLError, OSError, ValueError):
-        LOG.exception("falha ao enviar alerta WhatsApp via CallMeBot")
+        import client as evo
+    except ImportError:
+        LOG.error("client.py da Evolution API não encontrado em /root/evolution-api")
         return False
+    dest = evo.load_dest().get("dest")
+    if not dest:
+        return False
+    return evo.send_text(dest, message)

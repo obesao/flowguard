@@ -126,11 +126,8 @@ class FlowGuardDaemon:
         return severity_rank.get(severity, 0) >= severity_rank.get(min_sev_wa, 2)
 
     async def _send_whatsapp(self, message: str) -> None:
-        alerts_cfg = self.config.get("alerts", {})
         loop = asyncio.get_running_loop()
-        ok = await loop.run_in_executor(
-            None, notifier.send_whatsapp, alerts_cfg.get("wa_dest"), alerts_cfg.get("wa_apikey"), message,
-        )
+        ok = await loop.run_in_executor(None, notifier.send_whatsapp, message)
         if not ok:
             LOG.warning("falha ao enviar alerta WhatsApp")
 

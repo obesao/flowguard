@@ -161,7 +161,7 @@ def _notify_whatsapp(trigger: str, results: list[dict]) -> None:
         message += f"\nOK: {', '.join(ok_devices)}"
     if fail_devices:
         message += f"\nFALHA: {', '.join(fail_devices)}"
-    notifier.send_whatsapp(alerts_cfg.get("wa_dest"), alerts_cfg.get("wa_apikey"), message)
+    notifier.send_whatsapp(message)
 
 
 def list_devices(config_path: str = DEFAULT_CONFIG_PATH) -> list[dict]:

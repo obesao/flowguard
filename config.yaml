@@ -68,7 +68,5 @@ geoip:
   country_db: /usr/share/GeoIP/GeoLite2-Country.mmdb
 alerts:
   whatsapp: true
-  wa_dest: 5599XXXXXXXXX
-  wa_apikey: ''
   min_severity_wa: high
   webhook_url: ''

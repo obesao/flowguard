@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.8.0**
+**Versão atual: v1.9.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -55,6 +55,30 @@ pipeline automático de eventos ainda, só análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.9.0 — 2026-07-02 — Migra WhatsApp de CallMeBot pra Evolution API self-hosted
+- `notifier.py` reescrito: em vez da CallMeBot (serviço de terceiro), agora fala
+  com uma **Evolution API self-hosted** (`/root/evolution-api/`, Docker Compose
+  com Postgres+Redis) — conexão WhatsApp própria, sem depender de serviço
+  externo. `send_whatsapp(message)` perdeu os parâmetros `phone`/`apikey`: o
+  destino (grupo ou número) e a apikey da Evolution agora vêm de
+  `/root/evolution-api/notify.yaml`/`.env`, compartilhados com o ClientGuard —
+  só existe UMA sessão WhatsApp real.
+- `config.yaml`: removidos `alerts.wa_dest`/`wa_apikey` (eram específicos da
+  CallMeBot); `alerts.whatsapp`/`min_severity_wa` continuam controlando só se/
+  quando alerta, não mais o destino.
+- Portal ganhou uma tela nova ("📱 Alertas via WhatsApp" na aba Configuração,
+  ver repo do portal) pra escanear o QR, ver status da conexão, escolher o
+  grupo/número de destino e mandar mensagem de teste — sem precisar mexer em
+  YAML/terminal pra reconfigurar.
+- **Bug real encontrado e corrigido**: o `docker-compose.yml` da Evolution API
+  apontava `CACHE_REDIS_URI` pro hostname `evolution-redis`, mas o serviço no
+  compose se chama `redis` (Docker só resolve pelo nome do serviço ou
+  `container_name`, não por string arbitrária) — a API subia e conectava no
+  WhatsApp normalmente, mas todo envio de mensagem falhava silenciosamente
+  (`redis disconnected` nos logs) porque o cache de sessão nunca conectava.
+  Só apareceu ao testar o envio de verdade (mensagem de teste), não nos
+  healthchecks/migração do Postgres, que não dependem do Redis.
 
 ### v1.8.0 — 2026-07-02 — Mitigação sugerida configurável: RTBH, discard ou rate-limit por tipo
 - `bgp/flowspec.suggest_mitigation()` tinha as escolhas fixas no código: RTBH
