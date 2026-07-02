@@ -2,9 +2,9 @@
 
 **Versão atual: v1.0.0**
 
-Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para a
-POX Network (AS 262620), modelado na arquitetura do FastNetMon. Coleta
-NetFlow v9 do roteador de borda (Huawei NE8000), detecta ataques por limiar
+Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
+provedor de internet, modelado na arquitetura do FastNetMon. Coleta
+NetFlow v9 do roteador de borda, detecta ataques por limiar
 fixo e por anomalia de baseline (EWMA), e reage via BGP FlowSpec/RTBH
 (ExaBGP). Expõe um socket de controle Unix consumido pela CLI
 (`flowguard-cli`) e pelo [portal web](https://github.com/obesao/flowguard-portal).
@@ -51,7 +51,7 @@ pipeline automático de eventos ainda, só análise sob demanda.
 ## Changelog
 
 ### v1.0.0 — 2026-07-01 — Correções operacionais
-- `capacity_mbps` de `177.86.21.0/24` corrigido (estava 0).
+- `capacity_mbps` de um prefixo monitorado corrigido (estava 0).
 - Retenção de flows aumentada de 7 para 14 dias.
 - Falhas do ciclo de agregação e da análise de IA isoladas uma da outra.
 - Publicado no GitHub.
