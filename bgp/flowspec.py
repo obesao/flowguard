@@ -126,31 +126,77 @@ def build_command(action: str, kind: str, rule: dict) -> str:
     raise ValueError(f"kind desconhecido: {kind}")
 
 
-# Mitigação padrão por attack_type, conforme a coluna "Ação Padrão" da tabela
-# "Ataques Detectados" do spec (flowguard.md) — só cobre os tipos que
-# analyzer/engine.py realmente levanta hoje (ddos_volumetrico + AMP_PORTS).
-_SUGGESTED_FLOWSPEC = {
-    "dns_amp": ({"protocol": "udp", "src_port": "53", "pkt_len": ">512", "action": "discard"},
-                "FlowSpec: discard UDP origem 53, pacote >512b (amplificação DNS)"),
-    "ntp_amp": ({"protocol": "udp", "src_port": "123", "pkt_len": ">400", "action": "discard"},
-                "FlowSpec: discard UDP origem 123, pacote >400b (amplificação NTP)"),
-    "ssdp_amp": ({"protocol": "udp", "src_port": "1900", "action": "discard"},
-                 "FlowSpec: discard UDP origem 1900 (amplificação SSDP)"),
-    "memcached_amp": ({"protocol": "udp", "src_port": "11211", "action": "discard"},
-                       "FlowSpec: discard UDP origem 11211 (amplificação Memcached)"),
-    "cldap_amp": ({"protocol": "udp", "src_port": "389", "action": "discard"},
-                  "FlowSpec: discard UDP origem 389 (amplificação CLDAP)"),
+# Campos de match FIXOS por attack_type (o que define a assinatura do ataque —
+# protocolo/porta de origem — não é um parâmetro de intensidade ajustável). Tipos
+# ausentes daqui (ddos_volumetrico, anomalia_baseline) não têm porta/protocolo fixo
+# pra casar em FlowSpec — o match cai só no dst_prefix inteiro.
+_MATCH_TEMPLATES = {
+    "dns_amp": {"protocol": "udp", "src_port": "53"},
+    "ntp_amp": {"protocol": "udp", "src_port": "123"},
+    "ssdp_amp": {"protocol": "udp", "src_port": "1900"},
+    "memcached_amp": {"protocol": "udp", "src_port": "11211"},
+    "cldap_amp": {"protocol": "udp", "src_port": "389"},
+}
+
+_ATTACK_LABELS = {
+    "ddos_volumetrico": "DDoS volumétrico",
+    "dns_amp": "amplificação DNS",
+    "ntp_amp": "amplificação NTP",
+    "ssdp_amp": "amplificação SSDP",
+    "memcached_amp": "amplificação Memcached",
+    "cldap_amp": "amplificação CLDAP",
+    "anomalia_baseline": "anomalia de baseline",
 }
 
 
-def suggest_mitigation(attack_type: str, dst_prefix: str) -> dict:
-    """Mitigação recomendada para um ataque já confirmado pela engine de detecção.
+def _describe_match(match: dict) -> str:
+    if not match:
+        return "todo o tráfego pro prefixo"
+    parts = [f"{match['protocol']} origem {match['src_port']}"]
+    if match.get("pkt_len"):
+        parts.append(f"pacote {match['pkt_len']}b")
+    return ", ".join(parts)
 
-    ddos_volumetrico não tem protocolo/porta fixos para casar em FlowSpec — a
-    recomendação cai para RTBH (bloqueia o prefixo inteiro), igual à tabela do spec.
+
+def suggest_mitigation(attack_type: str, dst_prefix: str, mitigation_profiles: dict = None) -> dict:
+    """Mitigação recomendada para um ataque já confirmado pela engine de detecção —
+    kind/pkt_len_min/rate_limit_mbps vêm de mitigation_profiles (ver
+    configio.DEFAULT_MITIGATION_PROFILES; None ou tipo ausente usa esses defaults, o
+    mesmo comportamento de antes dessa configuração existir).
+
+    kind == "rtbh": blackhole total do prefixo via BGP (independe de match).
+    kind == "rate_limit": FlowSpec, não descarta — só limita a banda do tráfego que
+    casa o match (ou do prefixo inteiro, pros tipos sem porta/protocolo fixo).
+    kind == "discard" (default): FlowSpec, descarta só o tráfego que casa o match.
     """
-    entry = _SUGGESTED_FLOWSPEC.get(attack_type)
-    if entry is None:
-        return {"kind": "rtbh", "rule": {"dst_prefix": dst_prefix}, "label": "RTBH: bloqueio total do prefixo (ataque volumétrico, sem padrão de porta/protocolo)"}
-    template, label = entry
-    return {"kind": "flowspec", "rule": {**template, "dst_prefix": dst_prefix}, "label": label}
+    profile = (mitigation_profiles or {}).get(attack_type) or {}
+    match = dict(_MATCH_TEMPLATES.get(attack_type, {}))
+    default_kind = "discard" if match else "rtbh"
+    kind = profile.get("kind", default_kind)
+    label_suffix = f" ({_ATTACK_LABELS.get(attack_type, attack_type)})"
+
+    if attack_type in ("dns_amp", "ntp_amp"):
+        default_pkt_len = 512 if attack_type == "dns_amp" else 400
+        pkt_len_min = profile.get("pkt_len_min", default_pkt_len)
+        match["pkt_len"] = f">{int(pkt_len_min)}"
+
+    if kind == "rtbh":
+        return {
+            "kind": "rtbh", "rule": {"dst_prefix": dst_prefix},
+            "label": f"RTBH: bloqueio total do prefixo{label_suffix}",
+        }
+
+    if kind == "rate_limit":
+        rate_mbps = profile.get("rate_limit_mbps", 50)
+        rule = {**match, "dst_prefix": dst_prefix, "action": f"rate-limit:{int(rate_mbps * 1_000_000)}"}
+        return {
+            "kind": "flowspec", "rule": rule,
+            "label": f"FlowSpec: limita a {rate_mbps} Mbps — {_describe_match(match)}{label_suffix}",
+        }
+
+    # discard
+    rule = {**match, "dst_prefix": dst_prefix, "action": "discard"}
+    return {
+        "kind": "flowspec", "rule": rule,
+        "label": f"FlowSpec: descarta {_describe_match(match)}{label_suffix}",
+    }

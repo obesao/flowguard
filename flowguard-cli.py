@@ -334,6 +334,40 @@ def cmd_toggles_set(args: argparse.Namespace, sock_path: str) -> None:
     _print_simple(resp, ok_message=f"{args.key} = {args.value}")
 
 
+def cmd_mitigation_list(args: argparse.Namespace, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "mitigation_profiles"})
+    die_on_error(resp)
+    table = Table(title="Perfis de mitigação sugerida por tipo de ataque")
+    table.add_column("Tipo")
+    table.add_column("Estratégia")
+    table.add_column("Limiar de pacote")
+    table.add_column("Limite de banda")
+    for attack_type, profile in resp["profiles"].items():
+        table.add_row(
+            attack_type, profile.get("kind", "-"),
+            f"{profile['pkt_len_min']}b" if "pkt_len_min" in profile else "-",
+            f"{profile.get('rate_limit_mbps', '-')} Mbps",
+        )
+    console.print(table)
+    console.print("[dim]kind: rtbh (blackhole total) | discard (FlowSpec, só o tráfego do ataque) | "
+                   "rate_limit (FlowSpec, só limita banda)[/dim]")
+
+
+def cmd_mitigation_set(args: argparse.Namespace, sock_path: str) -> None:
+    fields: dict = {}
+    if args.kind is not None:
+        fields["kind"] = args.kind
+    if args.pkt_len_min is not None:
+        fields["pkt_len_min"] = args.pkt_len_min
+    if args.rate_limit_mbps is not None:
+        fields["rate_limit_mbps"] = args.rate_limit_mbps
+    if not fields:
+        console.print("[red]informe pelo menos um de --kind/--pkt-len-min/--rate-limit-mbps[/red]")
+        return
+    resp = send_command(sock_path, {"cmd": "set_mitigation_profiles", "profiles": {args.attack_type: fields}})
+    _print_simple(resp, ok_message=f"{args.attack_type}: {fields}")
+
+
 def cmd_whitelist_add(args: argparse.Namespace, sock_path: str) -> None:
     resp = send_command(sock_path, {"cmd": "whitelist_add", "prefix": args.prefix})
     _print_simple(resp)
@@ -550,6 +584,20 @@ def main() -> None:
     p_toggles_set.add_argument("key", choices=sorted(configio.DEFAULT_FEATURE_TOGGLES))
     p_toggles_set.add_argument("value", choices=["on", "off"])
     p_toggles_set.set_defaults(func=cmd_toggles_set)
+
+    p_mitigation = sub.add_parser("mitigation", help="estratégia/intensidade de mitigação sugerida por tipo de ataque")
+    mitigation_sub = p_mitigation.add_subparsers(dest="mitigation_action", required=True)
+    mitigation_sub.add_parser("list").set_defaults(func=cmd_mitigation_list)
+    p_mitigation_set = mitigation_sub.add_parser("set")
+    p_mitigation_set.add_argument("attack_type", choices=sorted(configio.DEFAULT_MITIGATION_PROFILES))
+    p_mitigation_set.add_argument("--kind", choices=configio.MITIGATION_KINDS,
+                                   help="rtbh (blackhole total) | discard (FlowSpec, só o tráfego do ataque) | "
+                                        "rate_limit (FlowSpec, só limita banda)")
+    p_mitigation_set.add_argument("--pkt-len-min", type=int, dest="pkt_len_min",
+                                   help="limiar de tamanho de pacote em bytes (só dns_amp/ntp_amp)")
+    p_mitigation_set.add_argument("--rate-limit-mbps", type=float, dest="rate_limit_mbps",
+                                   help="limite de banda em Mbps (usado quando kind=rate_limit)")
+    p_mitigation_set.set_defaults(func=cmd_mitigation_set)
 
     p_whitelist = sub.add_parser("whitelist")
     whitelist_sub = p_whitelist.add_subparsers(dest="whitelist_action", required=True)

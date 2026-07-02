@@ -1,0 +1,31 @@
+# mitigation_profiles.yaml — estratégia de mitigação sugerida (aba Ataques >
+# Aplicar Sugestão) por tipo de ataque:
+#   rtbh        - blackhole total do prefixo via BGP (mais agressivo)
+#   discard     - FlowSpec: descarta só o tráfego que casa o padrão do ataque
+#   rate_limit  - FlowSpec: não descarta, só limita a banda do tráfego que casa
+# pkt_len_min (bytes) e rate_limit_mbps são os parâmetros de intensidade do filtro.
+# Editável via portal (aba Configuração > Mitigação) ou flowguard-cli mitigation set.
+# Chave/campo ausente ou arquivo inexistente = comportamento original.
+ddos_volumetrico:
+  kind: rtbh
+  rate_limit_mbps: 100.0
+dns_amp:
+  kind: discard
+  pkt_len_min: 512
+  rate_limit_mbps: 50
+ntp_amp:
+  kind: discard
+  pkt_len_min: 400
+  rate_limit_mbps: 50
+ssdp_amp:
+  kind: discard
+  rate_limit_mbps: 50
+memcached_amp:
+  kind: discard
+  rate_limit_mbps: 50
+cldap_amp:
+  kind: discard
+  rate_limit_mbps: 50
+anomalia_baseline:
+  kind: rtbh
+  rate_limit_mbps: 50

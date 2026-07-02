@@ -254,6 +254,25 @@ class SocketServer:
         self.daemon.reload_config()
         return {"ok": True, "toggles": updated}
 
+    # --- perfis de mitigação: estratégia/intensidade sugerida por tipo de ataque ----
+
+    async def _cmd_mitigation_profiles(self, request: dict) -> dict:
+        return {"ok": True, "profiles": self.daemon.config.get("mitigation_profiles", {})}
+
+    async def _cmd_set_mitigation_profiles(self, request: dict) -> dict:
+        """changes: {attack_type: {kind?, pkt_len_min?, rate_limit_mbps?}, ...} — mesmo
+        padrão de _cmd_set_toggles (1 leitura+escrita só, validação antes de gravar)."""
+        changes = request.get("profiles")
+        if not isinstance(changes, dict) or not changes:
+            return {"ok": False, "error": "profiles (objeto não vazio) obrigatório"}
+        path = self.daemon.config["_mitigation_profiles_file"]
+        try:
+            updated = configio.save_mitigation_profiles(path, changes)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.daemon.reload_config()
+        return {"ok": True, "profiles": updated}
+
     async def _cmd_whitelist_add(self, request: dict) -> dict:
         prefix = request.get("prefix")
         if not prefix:
