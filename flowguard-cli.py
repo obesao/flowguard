@@ -242,13 +242,14 @@ def cmd_rules(args: argparse.Namespace, sock_path: str) -> None:
     die_on_error(resp)
     table = Table(title="Regras FlowSpec Ativas")
     table.add_column("ID")
-    table.add_column("Alvo")
+    table.add_column("Origem")
+    table.add_column("Destino")
     table.add_column("Ação")
     table.add_column("Expira em")
     now = time.time()
     for row in resp["rules"]:
         ttl = max(0, int(row["expires_at"] - now))
-        table.add_row(str(row["id"]), row["dst_prefix"] or "-", row["action"], f"{ttl}s")
+        table.add_row(str(row["id"]), row.get("src_prefix") or "-", row.get("dst_prefix") or "-", row["action"], f"{ttl}s")
     if not resp["rules"]:
         console.print("[green]Nenhuma regra FlowSpec ativa.[/green]")
     else:
