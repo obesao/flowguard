@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.3.0**
+**Versão atual: v1.4.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -46,9 +46,23 @@ pipeline automático de eventos ainda, só análise sob demanda.
 | `socket_server.py` | Servidor de controle (Unix socket) |
 | `flowguard-cli` | Cliente de terminal |
 | `ai/` | Análise sob demanda via Anthropic |
+| `warmode/` | "Modo Guerra" — roda comandos SSH em vários equipamentos de rede em paralelo (config em `warmode.yaml`, fora do git) |
 | `tools/synth_netflow.py` | Gerador de NetFlow sintético para testes |
 
 ## Changelog
+
+### v1.4.0 — 2026-07-02 — Modo Guerra: botão de emergência multi-equipamento via SSH
+- Novo módulo `warmode/`: em cenário de DDoS massivo, roda os comandos
+  configurados via SSH (Netmiko, drivers `huawei_vrp`/`a10`/etc) em vários
+  equipamentos do datacenter (NE8000, A10...) de uma vez, em paralelo — um
+  equipamento falhar não trava os outros.
+- Config (`warmode.yaml`, com host/usuário/senha/comandos por equipamento)
+  fica fora do git — só `warmode.yaml.example` é versionado. Nenhum comando
+  real configurado ainda, precisa ser preenchido antes de usar.
+- Toda execução grava audit log em `/var/log/flowguard-warmode-audit.jsonl`.
+- `flowguard-cli warmode list|run` (run pede confirmação, `--yes` pula) e
+  botão "🚨 Modo Guerra" no portal (ver repo do portal).
+- Deliberadamente standalone: não depende do `flowguard.service` estar de pé.
 
 ### v1.3.0 — 2026-07-02 — Corrige RTBH: community e next-hop inválidos travavam o anúncio
 - `rtbh_community` usava o ASN real do provedor numa community BGP padrão
