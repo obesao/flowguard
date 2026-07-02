@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.5.0**
+**Versão atual: v1.7.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -55,6 +55,18 @@ pipeline automático de eventos ainda, só análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml` |
 
 ## Changelog
+
+### v1.7.0 — 2026-07-02 — set_toggles (bulk) — aplicar vários tipos de ataque de uma vez
+- `save_feature_toggles`/socket `set_toggles` (novo) aplicam N mudanças numa
+  única leitura+escrita, pra dar suporte ao botão "Aplicar novas
+  configurações" do portal mandando 1 requisição com tudo em vez de N
+  paralelas. Diferente do ClientGuard (threads de verdade, risco real de
+  perder update sob concorrência), o socket aqui é asyncio de loop único sem
+  `await` no meio do read-modify-write, então não havia race condition de
+  fato — mas o formato em lote ainda reduz N reload_config()/escritas pra 1 e
+  deixa os dois backends com a mesma superfície de comando. `set_toggle`
+  (1 chave) e `flowguard-cli toggles set` continuam funcionando, delegando
+  pra `set_toggles` internamente.
 
 ### v1.6.0 — 2026-07-02 — Alertas via WhatsApp (CallMeBot)
 - `notifier.py` (novo) implementa o envio real de WhatsApp via CallMeBot
