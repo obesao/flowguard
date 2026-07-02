@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.0.0**
+**Versão atual: v1.1.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -49,6 +49,17 @@ pipeline automático de eventos ainda, só análise sob demanda.
 | `tools/synth_netflow.py` | Gerador de NetFlow sintético para testes |
 
 ## Changelog
+
+### v1.1.0 — 2026-07-02 — Corrige contagem dupla de tráfego
+- O roteador de borda exporta netstream `inbound` e `outbound` em todas as
+  interfaces, então cada pacote real gerava 2 registros NetFlow (ingress +
+  egress) do mesmo tráfego visto em dois pontos — bps/pps exibidos no portal
+  ficavam ~2x acima do real.
+- Parser passou a decodificar o campo NetFlow 61 (`flowDirection`) e a
+  agregação só conta registros `ingress`, contando cada pacote exatamente
+  uma vez.
+- Validado com captura real do tráfego e em produção: total agregado caiu de
+  ~45 Gbps para ~20,5 Gbps após a correção.
 
 ### v1.0.0 — 2026-07-01 — Correções operacionais
 - `capacity_mbps` de um prefixo monitorado corrigido (estava 0).
