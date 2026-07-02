@@ -7,7 +7,7 @@ collector:
   netflow_port: 2055
   sflow_port: 6343
   ipfix_port: 9995
-  bind_ip: 10.77.77.21
+  bind_ip: 10.77.10.2
   sampling_rate: 1000
   buffer_size: 65536
 database:
@@ -37,9 +37,9 @@ mitigation:
 bgp:
   exabgp_socket: /var/run/exabgp.sock
   speaker_log_file: /var/log/flowguard-speaker.log
-  router_id: 10.77.77.21
+  router_id: 10.77.10.2
   local_as: 262620
-  peer_ip: 10.77.77.1
+  peer_ip: 10.77.10.1
   rtbh_community: 262620:666
   nexthop_blackhole: 0.0.0.0
 ai:
