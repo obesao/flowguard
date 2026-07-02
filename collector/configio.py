@@ -88,13 +88,23 @@ def load_feature_toggles(path: str) -> dict:
 
 
 def save_feature_toggle(path: str, key: str, value: bool) -> dict:
-    """Lê o estado atual (mesclado com defaults), aplica uma mudança e persiste só as
-    chaves conhecidas — evita que um detection_toggles.yaml corrompido/editado à mão
-    propague lixo. Retorna o dict completo já atualizado."""
-    if key not in DEFAULT_FEATURE_TOGGLES:
-        raise ValueError(f"toggle desconhecido: {key}")
+    """Atalho de 1 chave só — ver save_feature_toggles (usada pelo botão "Aplicar
+    novas configurações" do portal, que manda todas as mudanças pendentes de uma vez)."""
+    return save_feature_toggles(path, {key: value})
+
+
+def save_feature_toggles(path: str, changes: dict) -> dict:
+    """Lê o estado atual (mesclado com defaults), aplica TODAS as mudanças de uma vez
+    numa única leitura+escrita, e persiste só chaves conhecidas — evita que um
+    detection_toggles.yaml corrompido/editado à mão propague lixo. Retorna o dict
+    completo já atualizado. 1 read+write só (em vez de 1 por chave) é o que permite o
+    chamador (socket_server) tratar isso como atômico sob concorrência."""
+    unknown = sorted(k for k in changes if k not in DEFAULT_FEATURE_TOGGLES)
+    if unknown:
+        raise ValueError(f"toggle(s) desconhecido(s): {', '.join(unknown)}")
     current = load_feature_toggles(path)
-    current[key] = bool(value)
+    for key, value in changes.items():
+        current[key] = bool(value)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(TOGGLES_HEADER.rstrip() + "\n")

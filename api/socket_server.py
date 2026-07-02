@@ -233,11 +233,24 @@ class SocketServer:
         return {"ok": True, "toggles": self.daemon.config.get("detection_toggles", {})}
 
     async def _cmd_set_toggle(self, request: dict) -> dict:
-        key = request.get("key")
-        if key not in configio.DEFAULT_FEATURE_TOGGLES:
-            return {"ok": False, "error": f"toggle desconhecido: {key}"}
+        return await self._cmd_set_toggles({"toggles": {request.get("key"): request.get("value")}})
+
+    async def _cmd_set_toggles(self, request: dict) -> dict:
+        """Aplica várias mudanças de toggle numa única leitura+escrita — usado pelo botão
+        "Aplicar novas configurações" do portal (1 requisição pra todas as funções
+        marcadas, em vez de 1 por checkbox) e reaproveitado por _cmd_set_toggle (1 chave
+        só). Sem lock explícito aqui (diferente do ClientGuard): este handler não tem
+        nenhum `await` entre ler e escrever o arquivo, e asyncio só troca de tarefa em
+        pontos de `await` — então duas chamadas concorrentes já são serializadas pelo
+        event loop, sem precisar de threading.Lock."""
+        changes = request.get("toggles")
+        if not isinstance(changes, dict) or not changes:
+            return {"ok": False, "error": "toggles (objeto não vazio) obrigatório"}
         path = self.daemon.config["_detection_toggles_file"]
-        updated = configio.save_feature_toggle(path, key, bool(request.get("value")))
+        try:
+            updated = configio.save_feature_toggles(path, changes)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
         self.daemon.reload_config()
         return {"ok": True, "toggles": updated}
 
