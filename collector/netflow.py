@@ -31,6 +31,7 @@ F_OUT_PKTS = 24
 F_IPV6_SRC_ADDR = 27
 F_IPV6_DST_ADDR = 28
 F_SAMPLING_INTERVAL = 34
+F_FLOW_DIRECTION = 61  # 0=ingress, 1=egress (IANA IE 61)
 
 IPV4_FIELDS = {F_IPV4_SRC_ADDR, F_IPV4_DST_ADDR, F_IPV4_NEXT_HOP}
 IPV6_FIELDS = {F_IPV6_SRC_ADDR, F_IPV6_DST_ADDR}
@@ -99,6 +100,7 @@ def _build_flow_record(fields: dict, ts: float, sampling_rate: int) -> FlowRecor
         dst_asn=int(fields.get(F_DST_AS, 0)),
         nexthop=str(fields.get(F_IPV4_NEXT_HOP, "")),
         sampling_rate=int(fields.get(F_SAMPLING_INTERVAL, sampling_rate)) or sampling_rate,
+        flow_direction=int(fields.get(F_FLOW_DIRECTION, 0)),
     )
 
 

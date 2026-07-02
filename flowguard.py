@@ -245,6 +245,12 @@ class FlowGuardDaemon:
         amp_totals: dict[tuple, dict] = defaultdict(lambda: {"bytes": 0, "packets": 0})
 
         for rec in records:
+            # a NE8000 exporta netstream inbound+outbound em toda interface, então cada
+            # pacote real gera 2 registros (um ingress, um egress) representando o mesmo
+            # tráfego visto em dois pontos do roteador — contar os dois dobraria tudo.
+            # ingress (flow_direction=0) já vê cada pacote exatamente uma vez.
+            if rec.flow_direction != 0:
+                continue
             matched_dst_prefix = match_protected_prefix(rec.dst_ip, protected)
             prefix = matched_dst_prefix if matched_dst_prefix is not None else resolve_dst_prefix(rec.dst_ip, protected)
             g = groups[(prefix, rec.protocol, rec.dst_port, "in")]

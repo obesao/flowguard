@@ -24,6 +24,9 @@ class FlowRecord:
     dst_asn: int
     nexthop: str
     sampling_rate: int
+    # 0=ingress, 1=egress (NetFlow field 61) — default 0 pois exportadores/testes
+    # que não mandam esse campo (ex: synth_netflow.py) devem contar como um único lado
+    flow_direction: int = 0
     # Enriquecimento pós-parse:
     src_country: str = ""
     src_category: str = ""    # cliente|transito|peering|desconhecido
