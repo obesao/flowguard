@@ -1,0 +1,34 @@
+# warmode.yaml — config do "botão de emergência" (Modo Guerra).
+#
+# Copie este arquivo pra warmode.yaml (fica fora do git, .gitignore já cobre) e
+# preencha host/usuário/senha/comandos reais. warmode.yaml tem senha em texto
+# puro — mesma proteção que /root/ai/.env: permissão de arquivo (chmod 600,
+# root-only), não é exposto por HTTP em lugar nenhum, nunca vai pro git.
+#
+# device_type usa os drivers do Netmiko (https://github.com/ktbyers/netmiko) —
+# os mais relevantes aqui: huawei_vrp (NE8000/VRP) e a10 (A10 Thunder/ACOS).
+# `enable_mode: true` faz o Netmiko chamar `enable` com enable_secret antes dos
+# comandos, se o equipamento precisar (normalmente não precisa em VRP/ACOS).
+#
+# Comandos rodam em sequência dentro de UM equipamento, mas todos os
+# equipamentos rodam em PARALELO entre si (pra não perder tempo num cenário de
+# ataque acontecendo agora).
+
+devices:
+  - name: "NE8000 borda"
+    host: 10.77.10.1
+    port: 22
+    device_type: huawei_vrp
+    username: admin
+    password: "TROQUE_AQUI"
+    enable_mode: false
+    commands: []   # ex.: ["system-view", "..."]
+
+  - name: "A10 Thunder"
+    host: 0.0.0.0
+    port: 22
+    device_type: a10
+    username: admin
+    password: "TROQUE_AQUI"
+    enable_mode: false
+    commands: []   # a definir

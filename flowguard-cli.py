@@ -14,7 +14,10 @@ import yaml
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
+from rich.prompt import Confirm
 from rich.table import Table
+
+from warmode.executor import list_devices, run_war_mode
 
 DEFAULT_CONFIG_PATH = "/root/flowguard/config.yaml"
 DEFAULT_SOCKET_PATH = "/var/run/flowguard.sock"
@@ -414,6 +417,46 @@ def build_dashboard(sock_path: str) -> Group:
     return Group(header, monitor_table, top_table, attacks_table)
 
 
+def cmd_warmode_list(args: argparse.Namespace, sock_path: str) -> None:
+    devices = list_devices()
+    if not devices:
+        console.print("[yellow]Nenhum equipamento configurado em warmode.yaml "
+                       "(copie warmode.yaml.example e preencha).[/yellow]")
+        return
+    table = Table(title="Modo Guerra — Equipamentos Configurados")
+    table.add_column("Nome")
+    table.add_column("Host")
+    table.add_column("Tipo")
+    table.add_column("Comandos")
+    for d in devices:
+        n = d["n_commands"]
+        cmds_str = str(n) if n else "[red]0 (nada vai rodar aqui)[/red]"
+        table.add_row(d["name"], d["host"] or "-", d["device_type"] or "-", cmds_str)
+    console.print(table)
+
+
+def cmd_warmode_run(args: argparse.Namespace, sock_path: str) -> None:
+    devices = list_devices()
+    if not devices:
+        console.print("[yellow]Nenhum equipamento configurado em warmode.yaml.[/yellow]")
+        return
+    console.print(Panel(
+        "\n".join(f"- {d['name']} ({d['host']}): {d['n_commands']} comando(s)" for d in devices),
+        title="[bold red]MODO GUERRA[/bold red] — isto vai rodar comandos reais nestes equipamentos agora",
+        border_style="red",
+    ))
+    if not args.yes and not Confirm.ask("Confirma a execução?", default=False):
+        console.print("Cancelado.")
+        return
+    console.print("Executando em paralelo...")
+    results = run_war_mode(trigger="cli")
+    for r in results:
+        if r["ok"]:
+            console.print(Panel(r["output"] or "(sem saída)", title=f"[green]OK[/green] {r['device']} ({r['elapsed_s']}s)"))
+        else:
+            console.print(Panel(r.get("error", "erro desconhecido"), title=f"[red]FALHOU[/red] {r['device']}", border_style="red"))
+
+
 def run_interactive(sock_path: str, interval: float) -> None:
     try:
         with Live(build_dashboard(sock_path), console=console, screen=True, auto_refresh=False) as live:
@@ -487,6 +530,14 @@ def main() -> None:
     p_mon_del = monitor_sub.add_parser("del")
     p_mon_del.add_argument("prefix")
     p_mon_del.set_defaults(func=cmd_monitor_del)
+
+    p_warmode = sub.add_parser("warmode", help="botão de emergência — roda comandos SSH em vários equipamentos (warmode.yaml)")
+    p_warmode.set_defaults(func=cmd_warmode_list)
+    warmode_sub = p_warmode.add_subparsers(dest="warmode_action")
+    warmode_sub.add_parser("list").set_defaults(func=cmd_warmode_list)
+    p_warmode_run = warmode_sub.add_parser("run")
+    p_warmode_run.add_argument("--yes", action="store_true", help="pula a confirmação interativa")
+    p_warmode_run.set_defaults(func=cmd_warmode_run)
 
     sub.add_parser("reload").set_defaults(func=cmd_reload)
     sub.add_parser("stop").set_defaults(func=cmd_stop)
