@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.7.0**
+**Versão atual: v1.8.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -52,9 +52,27 @@ pipeline automático de eventos ainda, só análise sob demanda.
 | `ai/` | Análise sob demanda via Anthropic |
 | `warmode/` | "Modo Guerra" — roda comandos SSH em vários equipamentos de rede em paralelo (config em `warmode.yaml`, fora do git) |
 | `tools/synth_netflow.py` | Gerador de NetFlow sintético para testes |
-| `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml` |
+| `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.8.0 — 2026-07-02 — Mitigação sugerida configurável: RTBH, discard ou rate-limit por tipo
+- `bgp/flowspec.suggest_mitigation()` tinha as escolhas fixas no código: RTBH
+  pra `ddos_volumetrico`/`anomalia_baseline` (sem porta/protocolo fixo pra
+  casar em FlowSpec) e "discard" com limiar de pacote fixo pros 5 tipos de
+  amplificação. Virou config editável por tipo (`mitigation_profiles.yaml`,
+  novo, mesmo padrão de `detection_toggles.yaml`):
+  - `kind`: `rtbh` (blackhole total, como antes) | `discard` (FlowSpec, só o
+    tráfego que casa o padrão) | `rate_limit` (FlowSpec, não derruba nada, só
+    limita a banda — opção nova, menos agressiva).
+  - `pkt_len_min` (bytes, só `dns_amp`/`ntp_amp`) e `rate_limit_mbps`: os
+    parâmetros de intensidade do filtro, antes hardcoded.
+- Novos comandos no socket: `mitigation_profiles` (lista) e
+  `set_mitigation_profiles` (aplica N mudanças numa leitura+escrita só, mesmo
+  padrão atômico de `set_toggles`). `flowguard-cli mitigation list|set`.
+- O botão "Mitigar" (aba Ataques) continua sempre RTBH — ação manual de
+  emergência, deliberadamente sem essa configuração; só "Aplicar Sugestão"
+  passou a honrar o perfil configurado.
 
 ### v1.7.0 — 2026-07-02 — set_toggles (bulk) — aplicar vários tipos de ataque de uma vez
 - `save_feature_toggles`/socket `set_toggles` (novo) aplicam N mudanças numa
