@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.4.0**
+**Versão atual: v1.4.1**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -50,6 +50,12 @@ pipeline automático de eventos ainda, só análise sob demanda.
 | `tools/synth_netflow.py` | Gerador de NetFlow sintético para testes |
 
 ## Changelog
+
+### v1.4.1 — 2026-07-02 — Suporte a editar equipamentos do Modo Guerra pelo portal
+- `warmode/executor.py` ganhou `load_devices_masked()` (nunca devolve senha
+  salva, só se ela existe) e `save_devices()` (mantém a senha já salva se o
+  campo vier vazio, pra editar sem redigitar toda vez) — usados pela tela de
+  configuração do portal (ver repo do portal).
 
 ### v1.4.0 — 2026-07-02 — Modo Guerra: botão de emergência multi-equipamento via SSH
 - Novo módulo `warmode/`: em cenário de DDoS massivo, roda os comandos
