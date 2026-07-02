@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.2.0**
+**Versão atual: v1.2.1**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -49,6 +49,12 @@ pipeline automático de eventos ainda, só análise sob demanda.
 | `tools/synth_netflow.py` | Gerador de NetFlow sintético para testes |
 
 ## Changelog
+
+### v1.2.1 — 2026-07-02 — Mostra origem nas regras FlowSpec do CLI
+- `flowguard-cli rules` ganhou coluna "Origem" (antes só mostrava "Alvo" =
+  destino, então uma regra de bloqueio por origem aparecia como "-"). Base
+  pro portal também expor bloqueio manual por IP de origem (ver repo do
+  portal e do ClientGuard).
 
 ### v1.2.0 — 2026-07-02 — Indicador de status da sessão BGP (Up/Down)
 - `bgp/speaker.py` passou a decodificar as notificações `neighbor-changes` que
