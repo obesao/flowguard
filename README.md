@@ -1,0 +1,78 @@
+# FlowGuard
+
+**Versão atual: v1.0.0**
+
+Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para a
+POX Network (AS 262620), modelado na arquitetura do FastNetMon. Coleta
+NetFlow v9 do roteador de borda (Huawei NE8000), detecta ataques por limiar
+fixo e por anomalia de baseline (EWMA), e reage via BGP FlowSpec/RTBH
+(ExaBGP). Expõe um socket de controle Unix consumido pela CLI
+(`flowguard-cli`) e pelo [portal web](https://github.com/obesao/flowguard-portal).
+
+## Etapas do projeto
+
+1. **Snapshot inicial** — coletor NetFlow v9, engine de detecção (limiar fixo
+   + anomalia por baseline EWMA), integração BGP/FlowSpec via ExaBGP, CLI e
+   daemon.
+2. **Direção in/out** — agregação e schema passaram a separar tráfego de
+   entrada e saída por prefixo (necessário pros gráficos do portal).
+3. **Detalhamento de ataques sem IA** — breakdown factual por protocolo/porta
+   e IPs de origem, derivado de `flow_aggs`.
+4. **Host `/32` individual** — rastreia qual host dentro de um prefixo
+   protegido está sendo atacado/consumindo, não só o `/24`.
+5. **Análise via IA** — endpoint sob demanda e relatório horário usando a API
+   da Anthropic (Claude).
+6. **Detalhamento enriquecido** — métricas de tráfego por porta e linha do
+   tempo no painel de detalhe de ataque.
+7. **Janela de tempo selecionável** no histórico de ataques.
+8. **Redução de falsos positivos** no detector de anomalia de baseline.
+9. **Correções operacionais** — `capacity_mbps` de prefixo corrigido,
+   retenção de flows aumentada de 7 para 14 dias, falhas do ciclo de
+   agregação e da análise de IA isoladas (uma não derruba a outra).
+
+**Pendente:** `exabgp.service` ainda não está ativo em produção — aguardando
+confirmação após aplicação da config VRP no NE8000 real. Fase 5 (IA) sem
+pipeline automático de eventos ainda, só análise sob demanda.
+
+## Estrutura
+
+| Caminho | Papel |
+|---|---|
+| `flowguard.py` | Daemon principal — coleta, agregação, detecção, orquestração |
+| `collector/` | Parser NetFlow v9 e matching de prefixos protegidos |
+| `analyzer/engine.py` | Detecção por limiar fixo e por baseline EWMA |
+| `bgp/speaker.py` | Integração BGP FlowSpec/RTBH via ExaBGP |
+| `storage.py` | Schema e acesso ao SQLite |
+| `socket_server.py` | Servidor de controle (Unix socket) |
+| `flowguard-cli` | Cliente de terminal |
+| `ai/` | Análise sob demanda via Anthropic |
+| `tools/synth_netflow.py` | Gerador de NetFlow sintético para testes |
+
+## Changelog
+
+### v1.0.0 — 2026-07-01 — Correções operacionais
+- `capacity_mbps` de `177.86.21.0/24` corrigido (estava 0).
+- Retenção de flows aumentada de 7 para 14 dias.
+- Falhas do ciclo de agregação e da análise de IA isoladas uma da outra.
+- Publicado no GitHub.
+
+### v0.6.0 — 2026-07-01 — Refinamentos de detecção e histórico
+- Redução de falsos positivos no detector de anomalia de baseline.
+- Janela de tempo selecionável no histórico de ataques.
+- Detalhamento de ataques enriquecido (métricas por porta, linha do tempo).
+
+### v0.5.0 — 2026-07-01 — Análise via IA
+- Endpoint de análise sob demanda e relatório horário via Anthropic (Claude).
+
+### v0.4.0 — 2026-07-01 — Granularidade de host
+- Rastreamento de host `/32` individual dentro de prefixos protegidos.
+- Detalhamento factual de ataques sem IA (breakdown por protocolo/porta e IPs
+  de origem).
+
+### v0.2.0 — 2026-07-01 — Direção in/out
+- Agregação e schema passaram a separar tráfego de entrada e saída por
+  prefixo.
+
+### v0.1.0 — 2026-06-30 — Snapshot inicial
+- Coletor NetFlow v9, engine de detecção (limiar fixo + anomalia por
+  baseline EWMA), integração BGP/FlowSpec via ExaBGP, CLI e daemon.
