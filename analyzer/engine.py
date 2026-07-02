@@ -160,16 +160,26 @@ class DetectionEngine:
 
         # to_insert e to_notify crescem em lockstep (1 to_notify.append por to_insert.append,
         # ver _evaluate) — dá pra casar attack_id com sua notificação por posição, sem SELECT.
+        # Notificações saem via fire_and_forget, NUNCA aguardadas aqui: cada uma envolve
+        # rede (análise IA, WhatsApp, webhook) com timeouts de vários segundos, e este
+        # método roda dentro do ciclo de agregação — esperar N notificações em série
+        # atrasaria o ciclo e transbordaria a fila de flows bem no meio de um ataque.
         for attack_id, (prefix, attack_type, severity, bps, pps, entry) in zip(inserted_ids, to_notify):
             LOG.warning(
                 "ATAQUE DETECTADO: %s em %s (%s) — %.1f Mbps, %s pps",
                 attack_type, prefix, entry.get("customer") or "?", bps / 1e6, f"{pps:,}".replace(",", "."),
             )
-            await self.daemon.notify_attack(attack_id, prefix, attack_type, severity, bps, pps, entry)
+            self.daemon.fire_and_forget(
+                self.daemon.notify_attack(attack_id, prefix, attack_type, severity, bps, pps, entry),
+                f"ataque #{attack_id} detectado",
+            )
 
         for attack_id, prefix, attack_type, severity, bps_peak in to_close_log(to_close, open_attacks):
             LOG.info("ataque encerrado: %s em %s (pico %.1f Mbps)", attack_type, prefix, bps_peak / 1e6)
-            await self.daemon.notify_attack_closed(attack_id, prefix, attack_type, severity, bps_peak)
+            self.daemon.fire_and_forget(
+                self.daemon.notify_attack_closed(attack_id, prefix, attack_type, severity, bps_peak),
+                f"ataque #{attack_id} encerrado",
+            )
 
     def _evaluate(self, now, prefix, attack_type, severity, triggered, bps, pps, min_duration, entry,
                   open_attacks, to_insert, to_update, to_close, to_notify) -> None:

@@ -32,6 +32,37 @@ LOG = logging.getLogger("flowguard")
 
 DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parent / "config.yaml")
 
+# Portas de destino a partir daqui são efêmeras (escolhidas aleatoriamente pelo lado
+# cliente da conexão) — individualmente não caracterizam nada, mas como chave de
+# agregação explodem a cardinalidade de flow_aggs: medido em produção, ~65 mil portas
+# distintas/hora geravam ~2.8M de linhas/hora (18GB de banco em 2 dias).
+EPHEMERAL_PORT_MIN = 1024
+
+# Quantos prefixos /24 de fallback (destinos que NÃO são clientes) são gravados
+# individualmente por ciclo; o resto vira uma linha agregada FALLBACK_REST_PREFIX
+# por protocolo. Medido em produção: ~9.600 /24 distintos por ciclo, sendo que
+# top_flows/top_prefixes exibem no máximo ~20 — a cauda longa só inflava a tabela.
+# Os totais (KPIs de bps/pps, gráfico por protocolo) não mudam: a linha "outros"
+# soma exatamente o que as linhas individuais somariam.
+FALLBACK_TOP_N = 100
+FALLBACK_REST_PREFIX = "outros"
+
+
+def bucket_dst_port(dst_port: int, is_protected: bool) -> int:
+    """Porta de destino usada como chave de agregação/gravação em flow_aggs.
+
+    Prefixo NÃO protegido (fallback /24 dos destinos de saída dos clientes): sempre 0 —
+    a detecção nunca olha esses grupos (usa proto_totals/amp_totals, calculados à
+    parte em memória) e detalhe por porta de tráfego que não é de cliente não é
+    acionável; era mais da metade das linhas gravadas.
+
+    Prefixo protegido: mantém a porta real só se for well-known (<1024), que é o que
+    attack_detail precisa pra caracterizar um ataque; o resto colapsa em 0 ("portas
+    efêmeras", mesma convenção do dst_port=0 já usado na direção 'out')."""
+    if not is_protected or dst_port >= EPHEMERAL_PORT_MIN:
+        return 0
+    return dst_port
+
 
 def load_config(path: str) -> dict:
     return configio.load_config(path)
@@ -86,6 +117,27 @@ class FlowGuardDaemon:
         self.bgp_manager = BgpManager(self)
         self.ai = AIClient(self.config.get("ai", {}))
         self._shutdown_task: asyncio.Task | None = None
+        # referências das notificações em background (ver fire_and_forget) — sem isso
+        # o GC pode recolher uma Task ainda em andamento
+        self._bg_tasks: set[asyncio.Task] = set()
+        # contagem de flows descartados por fila cheia desde o último warning logado
+        self._dropped_flows = 0
+        self._last_drop_warn = 0.0
+
+    def fire_and_forget(self, coro, what: str) -> None:
+        """Agenda uma corrotina de notificação (IA/WhatsApp/webhook) sem bloquear quem
+        chama — o ciclo de agregação/detecção não pode esperar chamadas de rede com
+        timeout de vários segundos, senão a fila de flows transborda exatamente
+        durante um ataque (quando várias notificações saem de uma vez)."""
+        task = asyncio.get_running_loop().create_task(coro)
+        self._bg_tasks.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._bg_tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                LOG.error("falha em notificação em background (%s)", what, exc_info=t.exception())
+
+        task.add_done_callback(_done)
 
     async def run_db(self, func, *args, **kwargs):
         """Executa uma chamada bloqueante de escrita fora do event loop principal."""
@@ -216,7 +268,16 @@ class FlowGuardDaemon:
                     try:
                         daemon.queue.put_nowait(rec)
                     except asyncio.QueueFull:
-                        LOG.warning("queue interna cheia, descartando flow")
+                        # 1 warning a cada 10s, não 1 por flow — sob sobrecarga real
+                        # (fila de 100k cheia) logar cada descarte vira I/O de log
+                        # massivo dentro do event loop e só piora a sobrecarga.
+                        daemon._dropped_flows += 1
+                        now = time.monotonic()
+                        if now - daemon._last_drop_warn >= 10:
+                            LOG.warning("fila interna cheia — %d flows descartados nos últimos %.0fs",
+                                        daemon._dropped_flows, now - daemon._last_drop_warn if daemon._last_drop_warn else 10)
+                            daemon._dropped_flows = 0
+                            daemon._last_drop_warn = now
 
         transport, _ = await loop.create_datagram_endpoint(Protocol, local_addr=(bind_ip, port))
         LOG.info("UDP listener ativo em %s:%s (NetFlow v9)", bind_ip, port)
@@ -242,6 +303,10 @@ class FlowGuardDaemon:
                     pruned = await self.run_db(storage.prune_old_aggs, self.conn, retention_days)
                     if pruned:
                         LOG.info("retenção: %d agregados antigos removidos", pruned)
+                # ANALYZE 1x/dia, fora do prune horário — na tabela grande ele custa
+                # caro e as estatísticas do planner não mudam a cada hora
+                if self._cycle_count % (cycles_per_hour * 24) == 0:
+                    await self.run_db(storage.analyze, self.conn)
             except Exception:
                 LOG.exception("falha no ciclo de agregação/detecção — pulando este ciclo, coleta continua")
 
@@ -256,7 +321,8 @@ class FlowGuardDaemon:
         protected = self.config.get("protected_prefixes", [])
         interval = self.config["database"]["aggregate_interval_s"]
         groups: dict[tuple, dict] = defaultdict(
-            lambda: {"bytes": 0, "packets": 0, "flow_count": 0, "src_ips": defaultdict(int), "dst_ips": defaultdict(int)}
+            lambda: {"bytes": 0, "packets": 0, "flow_count": 0, "src_ips": defaultdict(int),
+                     "dst_ips": defaultdict(int), "protected": False}
         )
         # totais por (prefixo, protocolo) — usados pela detecção de DDoS volumétrico
         proto_totals: dict[tuple, dict] = defaultdict(lambda: {"bytes": 0, "packets": 0})
@@ -273,7 +339,9 @@ class FlowGuardDaemon:
                 continue
             matched_dst_prefix = match_protected_prefix(rec.dst_ip, protected)
             prefix = matched_dst_prefix if matched_dst_prefix is not None else resolve_dst_prefix(rec.dst_ip, protected)
-            g = groups[(prefix, rec.protocol, rec.dst_port, "in")]
+            dst_port = bucket_dst_port(rec.dst_port, matched_dst_prefix is not None)
+            g = groups[(prefix, rec.protocol, dst_port, "in")]
+            g["protected"] = matched_dst_prefix is not None
             g["bytes"] += rec.real_bytes
             g["packets"] += rec.real_packets
             g["flow_count"] += 1
@@ -303,6 +371,22 @@ class FlowGuardDaemon:
                 go["bytes"] += rec.real_bytes
                 go["packets"] += rec.real_packets
                 go["flow_count"] += 1
+
+        # Cauda longa dos /24 de fallback: mantém os FALLBACK_TOP_N grupos mais
+        # volumosos do ciclo individualmente e funde o resto numa linha "outros"
+        # por protocolo — sem isso, os destinos de saída dos clientes geravam um
+        # grupo por /24 da internet inteira (~9.6k/ciclo), dominando a tabela.
+        fallback_in = [(key, g) for key, g in groups.items() if key[3] == "in" and not g["protected"]]
+        if len(fallback_in) > FALLBACK_TOP_N:
+            fallback_in.sort(key=lambda kg: kg[1]["bytes"], reverse=True)
+            for key, g in fallback_in[FALLBACK_TOP_N:]:
+                rest = groups[(FALLBACK_REST_PREFIX, key[1], 0, "in")]
+                rest["bytes"] += g["bytes"]
+                rest["packets"] += g["packets"]
+                rest["flow_count"] += g["flow_count"]
+                for ip, b in g["src_ips"].items():
+                    rest["src_ips"][ip] += b
+                del groups[key]
 
         now = int(time.time())
         rows = []

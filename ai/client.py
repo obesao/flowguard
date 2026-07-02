@@ -95,7 +95,9 @@ class AIClient:
             return None
 
         by_port = ", ".join(
-            f"proto={p['protocol']} porta={p['dst_port']} ({p['bps'] / 1e6:.1f} Mbps)"
+            # dst_port=0 é o agregado das portas efêmeras/sem granularidade (ver
+            # bucket_dst_port) — dizer "porta 0" pra IA induz análise errada
+            f"proto={p['protocol']} porta={p['dst_port'] or 'efêmeras (agregado)'} ({p['bps'] / 1e6:.1f} Mbps)"
             for p in detail.get("by_port", [])[:5]
         ) or "sem detalhamento por porta disponível"
         top_sources = ", ".join(s["ip"] for s in detail.get("top_sources", [])[:10]) or "não identificadas"

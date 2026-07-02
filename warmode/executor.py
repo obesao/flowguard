@@ -14,6 +14,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -85,6 +86,9 @@ def save_devices(devices: list[dict], config_path: str = DEFAULT_CONFIG_PATH) ->
     with open(config_path, "w", encoding="utf-8") as fh:
         fh.write("# warmode.yaml — editado via portal (Configuração do Modo Guerra > trocar senha pra acessar).\n")
         yaml.safe_dump({"devices": out}, fh, sort_keys=False, allow_unicode=True)
+    # contém senhas SSH dos equipamentos em texto puro — root-only, sempre; sem isso
+    # o arquivo nasce 644 (umask padrão) e qualquer usuário local lê as credenciais
+    os.chmod(config_path, 0o600)
 
 
 def _run_device(device: dict, timeout: float) -> dict:

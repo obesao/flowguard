@@ -16,6 +16,10 @@ SCHEMA = """
 -- prefixo de fato protegido (não o /24 de fallback usado pra destinos que não
 -- são clientes) — é o host /32 específico dentro do prefixo que recebeu o
 -- tráfego, análogo a top_src_ips mas do lado do destino.
+-- dst_port=0 significa "sem granularidade de porta": toda linha de prefixo não
+-- protegido, toda linha direction='out' e, em prefixos protegidos, o agregado das
+-- portas efêmeras (>=1024) — só portas well-known são gravadas individualmente
+-- (ver bucket_dst_port em flowguard.py; sem isso a tabela crescia ~9GB/dia).
 CREATE TABLE IF NOT EXISTS flow_aggs (
   id           INTEGER PRIMARY KEY,
   ts           INTEGER NOT NULL,
@@ -136,13 +140,33 @@ def insert_flow_aggs_batch(conn: sqlite3.Connection, rows: list[dict]) -> None:
     conn.commit()
 
 
-def prune_old_aggs(conn: sqlite3.Connection, retention_days: int) -> int:
+def prune_old_aggs(conn: sqlite3.Connection, retention_days: int, batch_size: int = 100_000) -> int:
+    """Remove agregados fora da janela de retenção, em lotes com commit intermediário.
+
+    Um DELETE único não serve aqui: no primeiro prune após 14 dias de acúmulo ele
+    apagaria dezenas/centenas de milhões de linhas numa transação só — a conexão de
+    escrita fica presa por minutos (nenhum ciclo de agregação/detecção grava nesse
+    meio tempo) e o WAL infla vários GB de uma vez. Em lotes, cada commit libera o
+    escritor pro ciclo corrente e mantém o WAL pequeno."""
     cutoff = int(time.time()) - retention_days * 86400
-    cur = conn.execute("DELETE FROM flow_aggs WHERE ts < ?", (cutoff,))
-    conn.commit()
+    total = 0
+    while True:
+        cur = conn.execute(
+            "DELETE FROM flow_aggs WHERE rowid IN "
+            "(SELECT rowid FROM flow_aggs WHERE ts < ? LIMIT ?)",
+            (cutoff, batch_size),
+        )
+        conn.commit()
+        total += cur.rowcount
+        if cur.rowcount < batch_size:
+            return total
+
+
+def analyze(conn: sqlite3.Connection) -> None:
+    """Atualiza as estatísticas do query planner — chamado 1x/dia pelo daemon (era
+    junto de cada prune horário, caro demais com flow_aggs na casa de milhões de linhas)."""
     conn.execute("ANALYZE")
     conn.commit()
-    return cur.rowcount
 
 
 def daemon_stats(conn: sqlite3.Connection, window_s: int = 30) -> dict:
@@ -364,16 +388,21 @@ def top_hosts_for_prefix(conn: sqlite3.Connection, dst_prefix: str, window_s: in
     é frequência entre ciclos, não volume exato por host."""
     since = int(time.time()) - window_s
     rows = conn.execute(
-        """SELECT top_dst_ips FROM flow_aggs INDEXED BY idx_flow_aggs_prefix
+        """SELECT bps, top_dst_ips FROM flow_aggs INDEXED BY idx_flow_aggs_prefix
            WHERE dst_prefix = ? AND direction = 'in' AND ts >= ?""",
         (dst_prefix, since),
     ).fetchall()
-    occurrences: dict[str, int] = {}
+    # ranking ponderado por bps_da_linha/(rank+1) — mesma razão e mesmo estimador
+    # de attack_detail: com portas efêmeras agregadas em dst_port=0, contagem
+    # simples favoreceria quem aparece em mais ciclos, não quem concentra tráfego
+    stats: dict[str, list] = {}
     for r in rows:
-        for ip in json.loads(r["top_dst_ips"] or "[]"):
-            occurrences[ip] = occurrences.get(ip, 0) + 1
-    top = sorted(occurrences.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-    return [{"ip": ip, "occurrences": n} for ip, n in top]
+        for i, ip in enumerate(json.loads(r["top_dst_ips"] or "[]")):
+            s = stats.setdefault(ip, [0, 0])
+            s[0] += 1
+            s[1] += r["bps"] / (i + 1)
+    top = sorted(stats.items(), key=lambda kv: kv[1][1], reverse=True)[:limit]
+    return [{"ip": ip, "occurrences": n} for ip, (n, _w) in top]
 
 
 def save_ai_analysis(conn: sqlite3.Connection, attack_id: int, analysis: str) -> bool:
@@ -459,21 +488,34 @@ def attack_detail(conn: sqlite3.Connection, dst_prefix: str, ts_start: int, ts_e
     # só conta origens/hosts das portas/protocolos que de fato dominam o ataque
     # (top_ports) — senão tráfego legítimo do cliente em outras portas, na mesma
     # janela, dilui/esconde os IPs que efetivamente atacaram.
-    src_occurrences: dict[str, int] = {}
-    dst_occurrences: dict[str, int] = {}
+    #
+    # O RANKING pondera cada aparição por bps_da_linha/(rank+1), não só conta ciclos:
+    # com as portas efêmeras colapsadas em dst_port=0, a linha do ataque divide o
+    # grupo com o tráfego legítimo do prefixo — um host movimentado que aparece em
+    # toda linha da janela "ganharia" por contagem simples do host atacado, que só
+    # aparece nas linhas (gigantes) do ataque. O decaimento por rank importa porque
+    # top_*_ips vem ordenado por bytes e o bps é da LINHA inteira: sem ele, todo
+    # host do top-10 da linha do ataque herdaria o mesmo peso do host nº 1.
+    # occurrences continua sendo a contagem de ciclos, só a ordenação usa o peso.
+    src_stats: dict[str, list] = {}   # ip -> [occurrences, peso]
+    dst_stats: dict[str, list] = {}
     for r in rows:
         if (r["protocol"], r["dst_port"]) not in top_keys:
             continue
-        for ip in json.loads(r["top_src_ips"] or "[]"):
-            src_occurrences[ip] = src_occurrences.get(ip, 0) + 1
-        for ip in json.loads(r["top_dst_ips"] or "[]"):
-            dst_occurrences[ip] = dst_occurrences.get(ip, 0) + 1
-    top_sources = sorted(src_occurrences.items(), key=lambda kv: kv[1], reverse=True)[:limit]
-    top_hosts = sorted(dst_occurrences.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+        for i, ip in enumerate(json.loads(r["top_src_ips"] or "[]")):
+            s = src_stats.setdefault(ip, [0, 0])
+            s[0] += 1
+            s[1] += r["bps"] / (i + 1)
+        for i, ip in enumerate(json.loads(r["top_dst_ips"] or "[]")):
+            s = dst_stats.setdefault(ip, [0, 0])
+            s[0] += 1
+            s[1] += r["bps"] / (i + 1)
+    top_sources = sorted(src_stats.items(), key=lambda kv: kv[1][1], reverse=True)[:limit]
+    top_hosts = sorted(dst_stats.items(), key=lambda kv: kv[1][1], reverse=True)[:limit]
     return {
         "by_port": top_ports,
-        "top_sources": [{"ip": ip, "occurrences": n} for ip, n in top_sources],
-        "top_hosts": [{"ip": ip, "occurrences": n} for ip, n in top_hosts],
+        "top_sources": [{"ip": ip, "occurrences": n} for ip, (n, _w) in top_sources],
+        "top_hosts": [{"ip": ip, "occurrences": n} for ip, (n, _w) in top_hosts],
         "summary": {
             "duration_s": until - ts_start,
             "cycles": len(rows),

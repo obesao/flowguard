@@ -56,6 +56,48 @@ pipeline automático de eventos ainda, só análise sob demanda.
 
 ## Changelog
 
+### v1.10.0 — 2026-07-02 — Corrige crescimento descontrolado de flow_aggs (~9GB/dia) + robustez sob ataque
+Revisão geral de código; correções em 4 frentes:
+
+- **Cardinalidade da agregação (crítico)**: a chave de agregação incluía a porta de
+  destino crua — ~65 mil portas efêmeras distintas/hora viravam ~2.8M de linhas/hora
+  em `flow_aggs` (18GB em 2 dias; no ritmo antigo, a retenção de 14 dias
+  estabilizaria em ~140GB, degradando toda query do portal). Duas mudanças em
+  `flowguard.py` (`bucket_dst_port` + fusão de cauda longa):
+  - Porta de destino só é gravada individualmente em prefixo protegido e se for
+    well-known (<1024) — que é o que `attack_detail` usa pra caracterizar ataque;
+    efêmeras colapsam em `dst_port=0`, prefixos de fallback sempre 0.
+  - Destinos que não são clientes (fallback /24, ~9.6k distintos/ciclo): só os 100
+    grupos mais volumosos do ciclo são gravados individualmente; o resto vira uma
+    linha `outros` por protocolo. Totais (KPIs, gráfico por protocolo) não mudam —
+    a linha agregada soma exatamente o que as individuais somariam.
+  - Resultado medido em produção: ~35.000 → ~160 grupos/ciclo (-99.5%), gravação
+    de 5-10s → alguns ms por ciclo. A detecção não muda em nada: ela sempre usou
+    totais por (prefixo, protocolo) calculados em memória, não a tabela.
+- **Retenção**: `prune_old_aggs` deletava tudo numa transação única — no primeiro
+  prune real (14 dias de acúmulo) isso seguraria a conexão de escrita por minutos.
+  Agora deleta em lotes de 100k com commit intermediário; `ANALYZE` saiu do prune
+  horário e virou 1x/dia (`storage.analyze`).
+- **Notificações fora do caminho crítico**: `evaluate_cycle` esperava (em série) a
+  análise por IA, o WhatsApp e o webhook de cada ataque novo — numa onda de ataques
+  simultâneos, o ciclo de agregação atrasava vários segundos e a fila de flows
+  transbordava exatamente na hora errada. Agora saem via `fire_and_forget`
+  (`asyncio.create_task` com log de erro no done-callback), e o warning de fila
+  cheia é rate-limitado (1 a cada 10s com contagem, em vez de 1 por flow descartado).
+- **Segurança**: `warmode.yaml` (senhas SSH dos equipamentos em texto puro) nascia
+  world-readable (644, umask padrão) quando salvo pelo portal — agora `chmod 600`
+  após toda gravação, e o arquivo existente foi corrigido.
+- **Regressão do colapso de portas, encontrada e corrigida na validação**: com as
+  efêmeras agregadas em `dst_port=0`, a linha do ataque passou a dividir o grupo com
+  o tráfego legítimo do prefixo, e o ranking de hosts/origens de `attack_detail`/
+  `top_hosts_for_prefix` (contagem simples de ciclos) elegia o host movimentado de
+  sempre em vez do host atacado — `target_host` de um ataque de teste veio errado.
+  Ranking agora pondera cada aparição por `bps_da_linha/(rank+1)` (a lista já vem
+  ordenada por bytes); validado com o mesmo ataque sintético: host alvo em 1º e as
+  origens sintéticas no topo. `occurrences` exibido não muda de significado. No
+  prompt da análise por IA, `porta=0` agora vira "efêmeras (agregado)" — "porta 0"
+  induzia a IA a analisar uma porta que não existe.
+
 ### v1.9.0 — 2026-07-02 — Migra WhatsApp de CallMeBot pra Evolution API self-hosted
 - `notifier.py` reescrito: em vez da CallMeBot (serviço de terceiro), agora fala
   com uma **Evolution API self-hosted** (`/root/evolution-api/`, Docker Compose
