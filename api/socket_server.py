@@ -93,15 +93,20 @@ class SocketServer:
     # --- comandos -----------------------------------------------------
 
     async def _cmd_dashboard(self, request: dict) -> dict:
-        """Agrega status+top+attacks+monitor numa única ida ao socket — usado pelo modo
+        """Agrega status+top+attacks+monitor+bgp numa única ida ao socket — usado pelo modo
         interativo do CLI, que antes pagava 4 round-trips sequenciais por frame."""
-        status, top, attacks, monitor = await asyncio.gather(
+        status, top, attacks, monitor, bgp = await asyncio.gather(
             self._cmd_status({}),
             self._cmd_top({"limit": request.get("top_limit", 8)}),
             self._cmd_attacks({}),
             self._cmd_monitor_list({}),
+            self._cmd_bgp_status({}),
         )
-        return {"ok": True, "status": status, "top": top, "attacks": attacks, "monitor": monitor}
+        return {"ok": True, "status": status, "top": top, "attacks": attacks, "monitor": monitor, "bgp": bgp}
+
+    async def _cmd_bgp_status(self, request: dict) -> dict:
+        status = await self.daemon.bgp_manager.status()
+        return {"ok": True, **status}
 
     async def _cmd_status(self, request: dict) -> dict:
         interval = self.daemon.config["database"]["aggregate_interval_s"]

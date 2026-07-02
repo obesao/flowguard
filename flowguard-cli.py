@@ -102,9 +102,16 @@ def die_on_error(resp: dict) -> None:
 
 # --- subcomandos ---------------------------------------------------------
 
+def fmt_bgp_state(bgp: dict) -> str:
+    if bgp.get("peer_state") == "up":
+        return "[bold green]Up[/bold green]"
+    return "[bold red]Down/Idle[/bold red]"
+
+
 def cmd_status(args: argparse.Namespace, sock_path: str) -> None:
     resp = send_command(sock_path, {"cmd": "status"})
     die_on_error(resp)
+    bgp = send_command(sock_path, {"cmd": "bgp_status"})
     table = Table(title="FlowGuard — Status do Daemon", show_header=False)
     table.add_row("PID", str(resp["pid"]))
     table.add_row("Uptime", f"{resp['uptime_s']:.0f}s")
@@ -113,6 +120,13 @@ def cmd_status(args: argparse.Namespace, sock_path: str) -> None:
     table.add_row("Flows agregados", str(resp["flows"]))
     table.add_row("Ataques ativos", str(resp["active_attacks"]))
     table.add_row("Regras FlowSpec ativas", str(resp["active_rules"]))
+    if bgp.get("ok"):
+        peer_line = fmt_bgp_state(bgp)
+        if bgp.get("peer_ip"):
+            peer_line += f"  ({bgp['peer_ip']})"
+        table.add_row("BGP (ExaBGP)", peer_line)
+    else:
+        table.add_row("BGP (ExaBGP)", f"[dim]indisponível: {bgp.get('error')}[/dim]")
     console.print(table)
 
 
@@ -344,6 +358,7 @@ def build_dashboard(sock_path: str) -> Group:
     top = resp["top"]
     attacks = resp["attacks"]
     monitor = resp["monitor"]
+    bgp = resp.get("bgp", {})
     if not status.get("ok"):
         header = Panel(f"[red]Daemon indisponível: {status.get('error')}[/red]", title="FlowGuard Monitor")
         return Group(header)
@@ -353,7 +368,8 @@ def build_dashboard(sock_path: str) -> Group:
         f"Pacotes/s: [bold]{status['pps']:,}[/bold]  |  "
         f"Flows: [bold]{status['flows']}[/bold]  |  "
         f"Ataques: [bold red]{status['active_attacks']}[/bold red] ATIVOS  |  "
-        f"Regras: [bold]{status['active_rules']}[/bold]  |  Daemon: [green]OK[/green]"
+        f"Regras: [bold]{status['active_rules']}[/bold]  |  "
+        f"BGP: {fmt_bgp_state(bgp)}  |  Daemon: [green]OK[/green]"
     ).replace(",", ".")
 
     header = Panel(statusbar, title=f"FlowGuard Monitor  |  {now_str}  |  Ctrl+C para sair")

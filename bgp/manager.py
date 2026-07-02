@@ -35,6 +35,27 @@ class BgpManager:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, control.send_command, sock_path, payload, 4.0)
 
+    async def status(self) -> dict:
+        """Estado da sessão BGP com o NE8000, visto pelo flowguard-speaker (populado via
+        notificações "neighbor-changes" do ExaBGP — ver bgp/speaker.py). peer_state é
+        sempre "up" ou "down": "down" cobre sessão caída, ainda conectando (TCP up mas
+        BGP não estabelecido) e "nunca recebemos evento nenhum" (speaker acabou de
+        subir, ou exabgp.conf sem `neighbor-changes;` no bloco api)."""
+        peer_ip = self._bgp_cfg().get("peer_ip")
+        resp = await self._send({"action": "status"})
+        if not resp.get("ok"):
+            return {"peer_state": "down", "peer_ip": peer_ip, "detail": resp.get("error", "erro desconhecido")}
+        info = resp.get("neighbors", {}).get(peer_ip)
+        if not info:
+            return {"peer_state": "down", "peer_ip": peer_ip, "detail": "nenhum evento de estado recebido do ExaBGP ainda"}
+        return {
+            "peer_state": "up" if info.get("state") == "up" else "down",
+            "peer_ip": peer_ip,
+            "raw_state": info.get("state"),
+            "reason": info.get("reason", ""),
+            "updated_at": info.get("updated_at"),
+        }
+
     async def _check_rule_budget(self) -> str | None:
         max_rules = self._mitigation_cfg().get("max_rules", 50)
         active = await self.daemon.run_read_db(storage.list_flowspec_rules, active_only=True)
