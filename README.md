@@ -35,8 +35,8 @@ fixo e por anomalia de baseline (EWMA), e reage via BGP FlowSpec/RTBH
     todos os ataques ativos como dispensados de uma vez.
 
 **Pendente:** `exabgp.service` ainda não está ativo em produção — aguardando
-confirmação após aplicação da config VRP no NE8000 real. Fase 5 (IA) sem
-pipeline automático de eventos ainda, só análise sob demanda.
+confirmação após aplicação da config BGP no roteador de borda real. Fase 5 (IA)
+sem pipeline automático de eventos ainda, só análise sob demanda.
 
 ## Estrutura
 
@@ -209,9 +209,9 @@ Revisão geral de código; correções em 4 frentes:
 
 ### v1.4.0 — 2026-07-02 — Modo Guerra: botão de emergência multi-equipamento via SSH
 - Novo módulo `warmode/`: em cenário de DDoS massivo, roda os comandos
-  configurados via SSH (Netmiko, drivers `huawei_vrp`/`a10`/etc) em vários
-  equipamentos do datacenter (NE8000, A10...) de uma vez, em paralelo — um
-  equipamento falhar não trava os outros.
+  configurados via SSH (Netmiko, qualquer driver suportado) em vários
+  equipamentos do datacenter (roteador de borda, mitigador...) de uma vez, em
+  paralelo — um equipamento falhar não trava os outros.
 - Config (`warmode.yaml`, com host/usuário/senha/comandos por equipamento)
   fica fora do git — só `warmode.yaml.example` é versionado. Nenhum comando
   real configurado ainda, precisa ser preenchido antes de usar.
