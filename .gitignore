@@ -8,3 +8,4 @@ db/threat_ips.txt
 *.log
 run/
 warmode.yaml
+routercfg_jobs/

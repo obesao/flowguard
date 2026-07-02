@@ -497,6 +497,114 @@ def cmd_warmode_list(args: argparse.Namespace, sock_path: str) -> None:
     console.print(table)
 
 
+def _parse_set_args(pairs: list[str] | None) -> dict:
+    values = {}
+    for item in pairs or []:
+        if "=" not in item:
+            raise SystemExit(f"formato inválido para --set: '{item}' (use campo=valor)")
+        k, v = item.split("=", 1)
+        values[k] = v
+    return values
+
+
+def cmd_routercfg_list(args: argparse.Namespace, sock_path: str) -> None:
+    from routercfg.templates import list_templates_public
+    templates = list_templates_public()
+    if not templates:
+        console.print("[yellow]Nenhum template em router_templates.yaml.[/yellow]")
+        return
+    table = Table(title="Config. Roteador — Templates Disponíveis")
+    table.add_column("ID")
+    table.add_column("Label")
+    table.add_column("Categoria")
+    table.add_column("Campos")
+    for t in templates:
+        fields_str = ", ".join(f["name"] for f in t["fields"])
+        table.add_row(t["id"], t["label"], t["category"], fields_str)
+    console.print(table)
+
+
+def cmd_routercfg_preview(args: argparse.Namespace, sock_path: str) -> None:
+    from routercfg.apply import preview
+    from routercfg.templates import ValidationError
+    values = _parse_set_args(args.set)
+    try:
+        result = preview(args.template_id, values)
+    except ValidationError as exc:
+        console.print(f"[red]Erro de validação:[/red] {exc}")
+        raise SystemExit(1)
+    console.print(Panel("\n".join(result["commands"]), title=f"Comandos — {result['label']}"))
+    console.print(Panel("\n".join(result["undo_commands"]), title="Comandos de reversão", border_style="yellow"))
+
+
+def cmd_routercfg_apply(args: argparse.Namespace, sock_path: str) -> None:
+    from routercfg.apply import apply_template, preview
+    from routercfg.templates import ValidationError
+    values = _parse_set_args(args.set)
+    try:
+        result = preview(args.template_id, values)
+    except ValidationError as exc:
+        console.print(f"[red]Erro de validação:[/red] {exc}")
+        raise SystemExit(1)
+    console.print(Panel(
+        "\n".join(result["commands"]),
+        title=f"[bold]Isto vai ser enviado ao roteador agora[/bold] — {result['label']}",
+        border_style="red",
+    ))
+    if not args.yes and not Confirm.ask("Confirma a aplicação?", default=False):
+        console.print("Cancelado.")
+        return
+    try:
+        job = apply_template(args.template_id, values, trigger="cli", confirm_window_s=args.window)
+    except ValidationError as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise SystemExit(1)
+    console.print(Panel(
+        f"Job {job['id']}\nAplicado em {result['label']}.\n"
+        f"Confirme com 'flowguard-cli routercfg confirm {job['id']}' em até {job['confirm_window_s'] // 60}min "
+        "ou a mudança será revertida automaticamente.",
+        title="[green]Aplicado[/green]", border_style="green",
+    ))
+
+
+def cmd_routercfg_confirm(args: argparse.Namespace, sock_path: str) -> None:
+    from routercfg.apply import confirm_job
+    from routercfg.templates import ValidationError
+    try:
+        confirm_job(args.job_id)
+        console.print("[green]Confirmado.[/green]")
+    except ValidationError as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise SystemExit(1)
+
+
+def cmd_routercfg_revert(args: argparse.Namespace, sock_path: str) -> None:
+    from routercfg.apply import revert_job
+    from routercfg.templates import ValidationError
+    try:
+        job = revert_job(args.job_id, trigger="manual")
+        console.print(f"[green]Revertido via {job['revert_result']['method']}.[/green]")
+    except ValidationError as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise SystemExit(1)
+
+
+def cmd_routercfg_history(args: argparse.Namespace, sock_path: str) -> None:
+    from routercfg.apply import list_history
+    jobs = list_history(limit=args.limit)
+    if not jobs:
+        console.print("[yellow]Nenhuma mudança registrada ainda.[/yellow]")
+        return
+    table = Table(title="Config. Roteador — Histórico")
+    table.add_column("Job")
+    table.add_column("Template")
+    table.add_column("Status")
+    table.add_column("Quando")
+    for j in jobs:
+        table.add_row(j["id"][:8], j["label"], j["status"], time.strftime("%Y-%m-%d %H:%M", time.localtime(j["created_at"])))
+    console.print(table)
+
+
 def cmd_warmode_run(args: argparse.Namespace, sock_path: str) -> None:
     devices = list_devices()
     if not devices:
@@ -629,6 +737,35 @@ def main() -> None:
     p_warmode_run = warmode_sub.add_parser("run")
     p_warmode_run.add_argument("--yes", action="store_true", help="pula a confirmação interativa")
     p_warmode_run.set_defaults(func=cmd_warmode_run)
+
+    p_routercfg = sub.add_parser("routercfg", help="edita configuração do roteador de borda via templates validados (SSH)")
+    p_routercfg.set_defaults(func=cmd_routercfg_list)
+    routercfg_sub = p_routercfg.add_subparsers(dest="routercfg_action")
+    routercfg_sub.add_parser("list").set_defaults(func=cmd_routercfg_list)
+
+    p_rc_preview = routercfg_sub.add_parser("preview")
+    p_rc_preview.add_argument("template_id")
+    p_rc_preview.add_argument("--set", action="append", help="campo=valor (repita por campo)")
+    p_rc_preview.set_defaults(func=cmd_routercfg_preview)
+
+    p_rc_apply = routercfg_sub.add_parser("apply")
+    p_rc_apply.add_argument("template_id")
+    p_rc_apply.add_argument("--set", action="append", help="campo=valor (repita por campo)")
+    p_rc_apply.add_argument("--yes", action="store_true", help="pula a confirmação interativa")
+    p_rc_apply.add_argument("--window", type=int, default=300, help="janela de confirmação em segundos (padrão 300)")
+    p_rc_apply.set_defaults(func=cmd_routercfg_apply)
+
+    p_rc_confirm = routercfg_sub.add_parser("confirm")
+    p_rc_confirm.add_argument("job_id")
+    p_rc_confirm.set_defaults(func=cmd_routercfg_confirm)
+
+    p_rc_revert = routercfg_sub.add_parser("revert")
+    p_rc_revert.add_argument("job_id")
+    p_rc_revert.set_defaults(func=cmd_routercfg_revert)
+
+    p_rc_history = routercfg_sub.add_parser("history")
+    p_rc_history.add_argument("--limit", type=int, default=20)
+    p_rc_history.set_defaults(func=cmd_routercfg_history)
 
     sub.add_parser("reload").set_defaults(func=cmd_reload)
     sub.add_parser("stop").set_defaults(func=cmd_stop)

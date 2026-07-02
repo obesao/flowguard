@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.9.0**
+**Versão atual: v1.11.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -33,6 +33,14 @@ fixo e por anomalia de baseline (EWMA), e reage via BGP FlowSpec/RTBH
     cada um dos 7 tipos de ataque detectados (volumétrico, 5 amplificações,
     anomalia de baseline) individualmente por checkbox, e um botão que marca
     todos os ataques ativos como dispensados de uma vez.
+11. **Configuração do roteador de borda via templates** (`routercfg/`) — novo
+    módulo que edita a config do roteador de borda por SSH usando templates
+    validados (sem CLI livre): exportação de NetFlow, rota estática, ACL
+    simples por prefixo, descrição/estado de interface. Cria um ponto de
+    rollback no equipamento antes de aplicar (quando suportado) e reverte
+    sozinho se o operador não confirmar a mudança dentro de alguns minutos.
+    Consumido pelo portal (`flowguard-routercfg.sh`) e por
+    `flowguard-cli routercfg`.
 
 **Pendente:** `exabgp.service` ainda não está ativo em produção — aguardando
 confirmação após aplicação da config BGP no roteador de borda real. Fase 5 (IA)
@@ -51,10 +59,46 @@ sem pipeline automático de eventos ainda, só análise sob demanda.
 | `flowguard-cli` | Cliente de terminal |
 | `ai/` | Análise sob demanda via Anthropic |
 | `warmode/` | "Modo Guerra" — roda comandos SSH em vários equipamentos de rede em paralelo (config em `warmode.yaml`, fora do git) |
+| `routercfg/` | Edição de config do roteador de borda via templates validados (SSH, reaproveita as credenciais de `warmode.yaml`) |
+| `router_templates.yaml` | Templates de configuração disponíveis (campos, validação, comandos VRP) |
 | `tools/synth_netflow.py` | Gerador de NetFlow sintético para testes |
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.11.0 — 2026-07-02 — Configuração do roteador de borda via templates validados
+- Novo módulo `routercfg/`: edição de config do roteador de borda por SSH
+  (Netmiko) restrita a templates pré-definidos em `router_templates.yaml`
+  (exportação de NetFlow, rota estática, ACL simples por prefixo, descrição/
+  estado de interface) — nunca aceita comando livre vindo de formulário.
+  Cada campo tem um tipo com validação estrita (`ipv4`, `ipv4_cidr`,
+  `interface_name`, `text_safe`, `enum`, `int_range`); quebra de linha e
+  separadores de comando (`;`, `|`, `` ` ``) são sempre rejeitados, mesmo
+  dentro de um campo aparentemente inofensivo.
+- Antes de aplicar, tenta criar um ponto de rollback nativo no equipamento
+  (best-effort — segue em frente se a versão/plataforma não suportar). Toda
+  mudança fica pendente de confirmação por alguns minutos (padrão 5); se o
+  operador não confirmar, um processo separado reverte sozinho, preferindo o
+  rollback point nativo e caindo para os `undo_commands` do próprio template
+  (obrigatórios em todo template) se o rollback point não existir.
+- Reaproveita as credenciais já cadastradas em `warmode.yaml` (mesmo arquivo
+  do "Modo Guerra") em vez de duplicar um segundo cadastro de senha SSH.
+- Exposto via `flowguard-cli routercfg list|preview|apply|confirm|revert|history`
+  e consumido pelo portal (`flowguard-routercfg.sh`, protegido pela mesma
+  senha do Modo Guerra).
+- 23 testes automatizados novos (`tests/test_routercfg_templates.py`,
+  `tests/test_routercfg_apply.py` — primeira suíte pytest do FlowGuard,
+  incluindo casos de tentativa de injeção via campo) cobrindo validação de
+  campos e o ciclo de vida completo (aplicar → confirmar/reverter →
+  histórico) com o SSH mockado. Validado também via CLI real e Playwright
+  real no portal — ver [[feedback-verify-with-real-browser]].
+- **Limitação conhecida:** não há acesso às credenciais reais do equipamento
+  neste ambiente (`warmode.yaml` ainda não preenchido) — o caminho de rede
+  (Netmiko/SSH de fato) não foi validado contra hardware real, só mockado;
+  a sintaxe VRP usada nos templates é a tipicamente documentada pra essa
+  família de equipamento e deve ser conferida contra a versão de software
+  real antes do primeiro uso em produção (mesma ressalva já feita antes para
+  os comandos de NetStream passados manualmente ao operador).
 
 ### v1.10.0 — 2026-07-02 — Corrige crescimento descontrolado de flow_aggs (~9GB/dia) + robustez sob ataque
 Revisão geral de código; correções em 4 frentes:
