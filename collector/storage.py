@@ -387,6 +387,29 @@ def get_attack(conn: sqlite3.Connection, attack_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def dismiss_attack(conn: sqlite3.Connection, attack_id: int) -> bool:
+    """Marca um ataque ainda ativo como 'dismissed' — some da lista/contagem de ativos
+    (ver list_attacks/daemon_stats, que já filtram dismissed=0) sem fechar o registro
+    (ts_end continua NULL: se a condição persistir, o pico bps/pps continua atualizando
+    a MESMA linha em vez de reabrir/notificar de novo, já que _evaluate casa por
+    ts_end IS NULL, não por dismissed). Só vale pra ataques ainda abertos — um já
+    fechado não está "marcado como suspeito" na tela, é histórico."""
+    cur = conn.execute(
+        "UPDATE attacks SET dismissed = 1 WHERE id = ? AND ts_end IS NULL AND dismissed = 0", (attack_id,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def dismiss_all_active_attacks(conn: sqlite3.Connection) -> int:
+    """Botão "Limpar hosts suspeitos" do portal — marca TODOS os ataques ainda ativos
+    como dismissed de uma vez. Mesma ressalva de dismiss_attack: só afeta ts_end IS NULL,
+    o histórico (ataques já encerrados) não é tocado."""
+    cur = conn.execute("UPDATE attacks SET dismissed = 1 WHERE ts_end IS NULL AND dismissed = 0")
+    conn.commit()
+    return cur.rowcount
+
+
 def attack_detail(conn: sqlite3.Connection, dst_prefix: str, ts_start: int, ts_end: int | None,
                    limit: int = 10, interval_s: int = 30) -> dict:
     """Detalhamento factual (sem IA) de um ataque: tráfego por protocolo/porta e IPs de

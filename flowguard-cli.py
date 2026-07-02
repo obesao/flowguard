@@ -17,6 +17,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 
+from collector import configio
 from warmode.executor import list_devices, run_war_mode
 
 DEFAULT_CONFIG_PATH = "/root/flowguard/config.yaml"
@@ -306,6 +307,33 @@ def cmd_flowspec_del(args: argparse.Namespace, sock_path: str) -> None:
     _print_simple(resp)
 
 
+def cmd_dismiss(args: argparse.Namespace, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "dismiss_attack", "attack_id": args.id})
+    _print_simple(resp, ok_message=f"ataque {args.id} marcado como dispensado")
+
+
+def cmd_dismiss_all(args: argparse.Namespace, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "dismiss_all_attacks"})
+    die_on_error(resp)
+    console.print(f"[green]{resp['cleared']} ataque(s) ativo(s) dispensado(s).[/green]")
+
+
+def cmd_toggles_list(args: argparse.Namespace, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "toggles"})
+    die_on_error(resp)
+    table = Table(title="Tipos de ataque detectados pelo FlowGuard")
+    table.add_column("Tipo")
+    table.add_column("Estado")
+    for key, value in resp["toggles"].items():
+        table.add_row(key, "[green]habilitado[/green]" if value else "[red]desabilitado[/red]")
+    console.print(table)
+
+
+def cmd_toggles_set(args: argparse.Namespace, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "set_toggle", "key": args.key, "value": args.value == "on"})
+    _print_simple(resp, ok_message=f"{args.key} = {args.value}")
+
+
 def cmd_whitelist_add(args: argparse.Namespace, sock_path: str) -> None:
     resp = send_command(sock_path, {"cmd": "whitelist_add", "prefix": args.prefix})
     _print_simple(resp)
@@ -507,6 +535,21 @@ def main() -> None:
     p_fs_del = flowspec_sub.add_parser("del")
     p_fs_del.add_argument("rule_id")
     p_fs_del.set_defaults(func=cmd_flowspec_del)
+
+    p_dismiss = sub.add_parser("dismiss", help="marca um ataque ativo como dispensado (some da lista/contagem de ativos)")
+    p_dismiss.add_argument("id", type=int)
+    p_dismiss.set_defaults(func=cmd_dismiss)
+
+    sub.add_parser("dismiss-all", help="marca TODOS os ataques ativos como dispensados de uma vez"
+                    ).set_defaults(func=cmd_dismiss_all)
+
+    p_toggles = sub.add_parser("toggles", help="liga/desliga cada tipo de ataque detectado")
+    toggles_sub = p_toggles.add_subparsers(dest="toggles_action", required=True)
+    toggles_sub.add_parser("list").set_defaults(func=cmd_toggles_list)
+    p_toggles_set = toggles_sub.add_parser("set")
+    p_toggles_set.add_argument("key", choices=sorted(configio.DEFAULT_FEATURE_TOGGLES))
+    p_toggles_set.add_argument("value", choices=["on", "off"])
+    p_toggles_set.set_defaults(func=cmd_toggles_set)
 
     p_whitelist = sub.add_parser("whitelist")
     whitelist_sub = p_whitelist.add_subparsers(dest="whitelist_action", required=True)

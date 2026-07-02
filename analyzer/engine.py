@@ -59,6 +59,10 @@ class DetectionEngine:
         detection_cfg = cfg.get("detection", {})
         protected = cfg.get("protected_prefixes", [])
         whitelist = cfg.get("whitelist", [])
+        toggles = cfg.get("detection_toggles", {})
+
+        def toggle_on(key: str) -> bool:
+            return toggles.get(key, True)
         min_duration = detection_cfg.get("min_attack_duration_s", 10)
         # duração mínima própria pra anomalia de baseline — separada de min_duration
         # porque esse detector reage a desvio estatístico de tráfego normal (ruidoso
@@ -104,9 +108,14 @@ class DetectionEngine:
             # no nome (ddos_tcp/ddos_udp) faz a chave trocar sempre que dois protocolos
             # de volume parecido alternam de líder, abandonando o registro anterior, que
             # nunca mais seria reavaliado para fechar (ficaria "preso" aberto para sempre).
-            self._evaluate(now, prefix, "ddos_volumetrico", "critical", volumetric_hit, total_bps, total_pps,
-                            min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
+            if toggle_on("ddos_volumetrico"):
+                self._evaluate(now, prefix, "ddos_volumetrico", "critical", volumetric_hit, total_bps, total_pps,
+                                min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
 
+            # any_amp_hit é calculado independente do toggle de cada amp_type — ele só
+            # existe pra suprimir a anomalia de baseline quando já há amplificação real
+            # acontecendo (evita alerta duplicado do mesmo tráfego por dois detectores),
+            # então precisa refletir o estado factual do tráfego, não o que está habilitado.
             any_amp_hit = False
             for src_port, (amp_type, severity) in AMP_PORTS.items():
                 amp = amp_totals.get((prefix, src_port))
@@ -114,8 +123,9 @@ class DetectionEngine:
                 amp_pps = amp["pps"] if amp else 0
                 amp_hit = amp_bps > bps_threshold
                 any_amp_hit = any_amp_hit or amp_hit
-                self._evaluate(now, prefix, amp_type, severity, amp_hit, amp_bps, amp_pps,
-                                min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
+                if toggle_on(amp_type):
+                    self._evaluate(now, prefix, amp_type, severity, amp_hit, amp_bps, amp_pps,
+                                    min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
 
             # Anomalia de baseline: só entra em jogo quando o limiar estático (acima) NÃO
             # disparou — ela existe pra pegar ataques relevantes pra um cliente PEQUENO
@@ -132,8 +142,9 @@ class DetectionEngine:
                         and total_bps > baseline_min_bps
                         and total_bps > baseline["bps_mean"] * 1.5
                     )
-                    self._evaluate(now, prefix, "anomalia_baseline", "high", anomaly_hit, total_bps, total_pps,
-                                    baseline_min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
+                    if toggle_on("anomalia_baseline"):
+                        self._evaluate(now, prefix, "anomalia_baseline", "high", anomaly_hit, total_bps, total_pps,
+                                        baseline_min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
 
             if baseline_enabled and not (volumetric_hit or any_amp_hit or anomaly_hit):
                 baseline_updates.append((prefix, total_bps, total_pps, baseline_alpha, now))

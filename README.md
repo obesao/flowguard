@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.4.1**
+**Versão atual: v1.5.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -29,6 +29,10 @@ fixo e por anomalia de baseline (EWMA), e reage via BGP FlowSpec/RTBH
 9. **Correções operacionais** — `capacity_mbps` de prefixo corrigido,
    retenção de flows aumentada de 7 para 14 dias, falhas do ciclo de
    agregação e da análise de IA isoladas (uma não derruba a outra).
+10. **Configurações via portal** (`detection_toggles.yaml`) — liga/desliga
+    cada um dos 7 tipos de ataque detectados (volumétrico, 5 amplificações,
+    anomalia de baseline) individualmente por checkbox, e um botão que marca
+    todos os ataques ativos como dispensados de uma vez.
 
 **Pendente:** `exabgp.service` ainda não está ativo em produção — aguardando
 confirmação após aplicação da config VRP no NE8000 real. Fase 5 (IA) sem
@@ -48,8 +52,39 @@ pipeline automático de eventos ainda, só análise sob demanda.
 | `ai/` | Análise sob demanda via Anthropic |
 | `warmode/` | "Modo Guerra" — roda comandos SSH em vários equipamentos de rede em paralelo (config em `warmode.yaml`, fora do git) |
 | `tools/synth_netflow.py` | Gerador de NetFlow sintético para testes |
+| `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml` |
 
 ## Changelog
+
+### v1.5.0 — 2026-07-02 — Configurações via portal: liga/desliga tipos de ataque + limpar ativos
+- `detection_toggles.yaml` (novo, separado do `config.yaml` — mesmo motivo de
+  `protected_prefixes`/`whitelist`: editar via portal não pode reescrever o
+  config principal) guarda o estado dos 7 tipos de ataque (`ddos_volumetrico`,
+  `dns_amp`, `ntp_amp`, `ssdp_amp`, `memcached_amp`, `cldap_amp`,
+  `anomalia_baseline`). Chave ausente/arquivo inexistente = habilitado, sem
+  mudança de comportamento pra quem não usar a tela nova.
+- `analyzer/engine.py` passou a pular a avaliação (`_evaluate`) de qualquer
+  tipo desabilitado — a métrica factual (`any_amp_hit`, usada pra suprimir
+  duplicidade com a anomalia de baseline) continua calculada independente do
+  toggle, só a criação/atualização do registro em `attacks` é que é pulada.
+- Coluna `dismissed` já existia no schema `attacks` mas nunca era escrita por
+  nada — `storage.dismiss_attack`/`dismiss_all_active_attacks` (novo) marcam
+  ataque(s) ativo(s) como dispensados sem fechar o registro (`ts_end`
+  continua NULL): se a condição persistir, o próximo ciclo atualiza a MESMA
+  linha em vez de reabrir/notificar de novo, já que a engine casa por
+  `ts_end IS NULL`, não por `dismissed`.
+- Novos comandos no socket: `toggles`, `set_toggle`, `dismiss_attack`,
+  `dismiss_all_attacks`. `flowguard-cli toggles list|set`, `dismiss <id>`,
+  `dismiss-all`.
+- Portal: seção "Funções de Detecção" na aba Configuração (checkbox por tipo
+  de ataque) e botão "Limpar hosts suspeitos" na aba Ataques — reaproveita
+  `flowguard-attacks.sh` (`action: "dismiss"|"dismiss_all"`, novo).
+- Validado contra o daemon em produção com tráfego sintético
+  (`tools/synth_netflow.py dns_amp`): com o toggle `dns_amp` desabilitado, o
+  mesmo tráfego não abriu ataque `dns_amp` mas ainda abriu
+  `ddos_volumetrico` (toggle independente por tipo, confirmado) — depois
+  dispensado via `dismiss` e confirmado fora da lista de "Ativos" mantendo o
+  registro no histórico.
 
 ### v1.4.1 — 2026-07-02 — Suporte a editar equipamentos do Modo Guerra pelo portal
 - `warmode/executor.py` ganhou `load_devices_masked()` (nunca devolve senha

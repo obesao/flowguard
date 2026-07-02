@@ -52,6 +52,7 @@ ai:
   rate_limit_rpm: 5
 protected_prefixes_file: /root/flowguard/protected_prefixes.yaml
 whitelist_file: /root/flowguard/whitelist.yaml
+detection_toggles_file: /root/flowguard/detection_toggles.yaml
 threat_feeds:
   enabled: true
   update_interval_h: 6

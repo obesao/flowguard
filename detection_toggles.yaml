@@ -1,0 +1,10 @@
+# detection_toggles.yaml — liga/desliga cada tipo de ataque detectado, editável via
+# portal (aba Configuração > Funções) ou flowguard-cli toggles set.
+# Chave ausente = habilitado (mesmo padrão de antes desta feature existir).
+ddos_volumetrico: true
+dns_amp: true
+ntp_amp: true
+ssdp_amp: true
+memcached_amp: true
+cldap_amp: true
+anomalia_baseline: true

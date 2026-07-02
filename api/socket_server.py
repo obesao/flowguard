@@ -214,6 +214,33 @@ class SocketServer:
             return {"ok": False, "error": "rule_id inválido"}
         return await self.daemon.bgp_manager.flowspec_del(rule_id)
 
+    async def _cmd_dismiss_attack(self, request: dict) -> dict:
+        attack_id = request.get("attack_id")
+        if not attack_id:
+            return {"ok": False, "error": "attack_id obrigatório"}
+        found = await self.daemon.run_db(storage.dismiss_attack, self.daemon.conn, int(attack_id))
+        if not found:
+            return {"ok": False, "error": "ataque não encontrado ou já não está ativo"}
+        return {"ok": True}
+
+    async def _cmd_dismiss_all_attacks(self, request: dict) -> dict:
+        cleared = await self.daemon.run_db(storage.dismiss_all_active_attacks, self.daemon.conn)
+        return {"ok": True, "cleared": cleared}
+
+    # --- toggles: liga/desliga cada tipo de ataque via portal/CLI ---------
+
+    async def _cmd_toggles(self, request: dict) -> dict:
+        return {"ok": True, "toggles": self.daemon.config.get("detection_toggles", {})}
+
+    async def _cmd_set_toggle(self, request: dict) -> dict:
+        key = request.get("key")
+        if key not in configio.DEFAULT_FEATURE_TOGGLES:
+            return {"ok": False, "error": f"toggle desconhecido: {key}"}
+        path = self.daemon.config["_detection_toggles_file"]
+        updated = configio.save_feature_toggle(path, key, bool(request.get("value")))
+        self.daemon.reload_config()
+        return {"ok": True, "toggles": updated}
+
     async def _cmd_whitelist_add(self, request: dict) -> dict:
         prefix = request.get("prefix")
         if not prefix:
