@@ -40,8 +40,8 @@ bgp:
   router_id: 10.77.10.2
   local_as: 262620
   peer_ip: 10.77.10.1
-  rtbh_community: 262620:666
-  nexthop_blackhole: 0.0.0.0
+  rtbh_community: 2626:669
+  nexthop_blackhole: 10.77.10.2
 ai:
   enabled: true
   env_file: /root/ai/.env

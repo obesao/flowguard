@@ -102,6 +102,13 @@ def flowspec_withdraw(rule: dict) -> str:
 
 
 def rtbh_announce(prefix: str, community: str, nexthop: str) -> str:
+    # community é AS:NN em 16+16 bits (RFC 1997) — não pode ser o nosso AS real
+    # (262620, ASN de 4 bytes, estoura os 16 bits: exabgp quebra com "'L' format
+    # requires 0 <= number <= 4294967295" ao empacotar). O NE8000 casa a aceitação
+    # da rota pelo community-filter basic COMM_FASTNETMON_BLACKHOLE, que permite
+    # especificamente 2626:669 — um valor convencional (não o AS real), configurado
+    # assim do lado do Huawei. bgp.rtbh_community em config.yaml precisa bater com
+    # exatamente esse valor.
     return f"announce route {prefix} next-hop {nexthop} community [{community}]"
 
 

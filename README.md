@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.2.1**
+**Versão atual: v1.3.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -49,6 +49,21 @@ pipeline automático de eventos ainda, só análise sob demanda.
 | `tools/synth_netflow.py` | Gerador de NetFlow sintético para testes |
 
 ## Changelog
+
+### v1.3.0 — 2026-07-02 — Corrige RTBH: community e next-hop inválidos travavam o anúncio
+- `rtbh_community` usava o ASN real do provedor numa community BGP padrão
+  (16+16 bits) — um ASN de 4 bytes estoura esse formato e travava o ExaBGP
+  silenciosamente ao montar a rota (nenhuma rota chegava a ser anunciada,
+  mesmo com a sessão BGP up e sem nenhum erro visível). Trocado pelo valor de
+  community que o roteador de borda realmente casa no filtro de aceitação.
+- `nexthop_blackhole` estava como `0.0.0.0` — atributo NEXT_HOP inválido para
+  BGP, descartado silenciosamente pelo roteador antes mesmo de avaliar a
+  política de aceitação (nenhuma NOTIFICATION, contador de rotas recebidas
+  ficava em zero). Trocado pelo IP do próprio speaker ("next-hop self"),
+  padrão que o roteador reescreve para blackhole via política de import.
+- Validado ponta a ponta em produção: rota de teste apareceu na tabela BGP do
+  roteador de borda com a local-preference esperada, confirmando que a
+  política de aceitação (community-filter + prefix-list) agora casa.
 
 ### v1.2.1 — 2026-07-02 — Mostra origem nas regras FlowSpec do CLI
 - `flowguard-cli rules` ganhou coluna "Origem" (antes só mostrava "Alvo" =
