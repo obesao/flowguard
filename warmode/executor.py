@@ -34,6 +34,54 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> dict:
     return yaml.safe_load(p.read_text(encoding="utf-8")) or {"devices": []}
 
 
+def load_devices_masked(config_path: str = DEFAULT_CONFIG_PATH) -> list[dict]:
+    """Pra tela de configuração no portal — nunca devolve a senha salva, só se
+    ela existe (has_password), pra não reexibir segredo já gravado."""
+    cfg = load_config(config_path)
+    out = []
+    for d in cfg.get("devices") or []:
+        out.append({
+            "name": d.get("name", ""),
+            "host": d.get("host", ""),
+            "port": d.get("port", 22),
+            "device_type": d.get("device_type", ""),
+            "username": d.get("username", ""),
+            "has_password": bool(d.get("password")),
+            "enable_mode": bool(d.get("enable_mode", False)),
+            "commands": d.get("commands") or [],
+        })
+    return out
+
+
+def save_devices(devices: list[dict], config_path: str = DEFAULT_CONFIG_PATH) -> None:
+    """Grava a lista de equipamentos vinda do formulário do portal. Cada item sem
+    "password" (ausente/vazia) mantém a senha já salva daquele host — o frontend
+    nunca recebe a senha de volta, só edita se quiser trocá-la."""
+    existing_by_host = {d.get("host"): d for d in (load_config(config_path).get("devices") or [])}
+    out = []
+    for d in devices:
+        host = d["host"]
+        row = {
+            "name": d.get("name") or host,
+            "host": host,
+            "port": int(d.get("port") or 22),
+            "device_type": d["device_type"],
+            "username": d.get("username", ""),
+            "enable_mode": bool(d.get("enable_mode", False)),
+            "commands": [c for c in (d.get("commands") or []) if c.strip()],
+        }
+        new_password = d.get("password") or ""
+        if new_password:
+            row["password"] = new_password
+        else:
+            row["password"] = existing_by_host.get(host, {}).get("password", "")
+        out.append(row)
+    Path(config_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as fh:
+        fh.write("# warmode.yaml — editado via portal (Configuração do Modo Guerra > trocar senha pra acessar).\n")
+        yaml.safe_dump({"devices": out}, fh, sort_keys=False, allow_unicode=True)
+
+
 def _run_device(device: dict, timeout: float) -> dict:
     name = device.get("name") or device.get("host", "?")
     commands = device.get("commands") or []
