@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.18.0**
+**Versão atual: v1.19.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,26 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.19.0 — 2026-07-03 — Reversão do Modo Guerra (revert_commands por equipamento)
+- Pedido do usuário: um botão "Sair do Modo Guerra" no portal, pra desfazer
+  os comandos aplicados sem precisar entrar manualmente em cada equipamento.
+- Cada equipamento em `warmode.yaml` ganhou `revert_commands` (opcional,
+  mesmo formato/regras de `commands` — `system-view` como primeiro item
+  entra em modo de configuração automaticamente via `send_config_set`, ver
+  fix da v1.18.0). `_run_device()` agora recebe um `mode` ("apply"/"revert")
+  e escolhe a lista de comandos correspondente; equipamento sem
+  `revert_commands` configurado retorna erro tratado (não trava os outros).
+- Nova função pública `run_war_mode_revert()`, `flowguard-cli warmode
+  revert` (mesma confirmação interativa do `run`), `list_devices()` ganhou
+  `n_revert_commands`, audit log (`/var/log/flowguard-warmode-audit.jsonl`)
+  e notificação WhatsApp ganharam um campo `mode` pra distinguir apply de
+  revert.
+- Validado com Netmiko mockado reproduzindo a sequência real de comandos do
+  equipamento que motivou o pedido (`NE8000-PPPOE`/`HUAWEI-PPPOE-222`) e com
+  Playwright real contra o backend de produção (contagens de comando batendo
+  com `warmode.yaml` real, confirm button corretamente desabilitado quando
+  `revert_commands` está vazio).
 
 ### v1.18.0 — 2026-07-03 — Corrige Modo Guerra travando em equipamentos com system-view
 - **Bug real reportado pelo usuário**: um equipamento do Modo Guerra
