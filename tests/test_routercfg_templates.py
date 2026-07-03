@@ -125,3 +125,42 @@ def test_bgp_templates_reject_injection_in_peer_ip():
 def test_bgp_as_number_out_of_range_rejected():
     with pytest.raises(ValidationError):
         build_commands("bgp_peer_toggle", {"as_number": "99999999999", "peer_ip": "200.201.202.1", "action": "down"})
+
+
+def test_vlan_create_toggle_symmetric():
+    built = build_commands("vlan_create_toggle", {"vlan_id": "100", "action": "create"})
+    assert built["commands"] == ["vlan 100", "quit"]
+    assert built["undo_commands"] == ["undo vlan 100", "quit"]
+
+
+def test_vlan_id_out_of_range_rejected():
+    with pytest.raises(ValidationError):
+        build_commands("vlan_create_toggle", {"vlan_id": "5000", "action": "create"})
+
+
+def test_vlan_trunk_toggle_symmetric():
+    built = build_commands("vlan_trunk_toggle", {"interface": "GigabitEthernet0/0/1", "vlan_id": "100", "action": "remove"})
+    assert built["commands"] == ["interface GigabitEthernet0/0/1", "undo port trunk allow-pass vlan 100", "quit"]
+    assert built["undo_commands"] == ["interface GigabitEthernet0/0/1", "port trunk allow-pass vlan 100", "quit"]
+
+
+def test_interface_ip_toggle_symmetric_and_expands_cidr():
+    built = build_commands("interface_ip_toggle", {"interface": "GigabitEthernet0/0/2", "ip": "10.0.0.1/30", "action": "add"})
+    assert built["commands"] == ["interface GigabitEthernet0/0/2", "ip address 10.0.0.1 255.255.255.252", "quit"]
+    assert built["undo_commands"] == ["interface GigabitEthernet0/0/2", "undo ip address 10.0.0.1 255.255.255.252", "quit"]
+
+
+def test_vlan_subinterface_create_composes_dotted_name():
+    built = build_commands("vlan_subinterface_create", {"interface": "GigabitEthernet0/0/1", "vlan_id": "100", "ip": "192.168.100.1/24"})
+    assert built["commands"][0] == "interface GigabitEthernet0/0/1.100"
+    assert built["undo_commands"] == ["undo interface GigabitEthernet0/0/1.100"]
+
+
+def test_vlan_subinterface_remove_composes_dotted_name():
+    built = build_commands("vlan_subinterface_remove", {"interface": "GigabitEthernet0/0/1", "vlan_id": "100"})
+    assert built["commands"] == ["undo interface GigabitEthernet0/0/1.100"]
+
+
+def test_vlan_templates_reject_injection_in_interface():
+    with pytest.raises(ValidationError):
+        build_commands("vlan_trunk_toggle", {"interface": "GigabitEthernet0/0/1; reboot", "vlan_id": "100", "action": "add"})

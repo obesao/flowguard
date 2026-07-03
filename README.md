@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.12.0**
+**Versão atual: v1.13.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -49,10 +49,19 @@ fixo e por anomalia de baseline (EWMA), e reage via BGP FlowSpec/RTBH
     ... ignore`) e anunciar/remover um prefixo da lista de IPs advertidos
     (`network`/`undo network`) — o operador escolhe peer/prefixo numa lista
     real em vez de digitar IP na mão.
+13. **Visualização por operadora, interfaces e VLANs** — `discover_all()`
+    unifica a leitura anterior com `display ip interface brief` e `display
+    vlan brief` numa única conexão SSH; `discover_peer_routes()` lê `display
+    bgp routing-table peer {ip} advertised-routes`/`received-routes` pra
+    mostrar exatamente quais prefixos estão sendo anunciados/recebidos de
+    cada operadora. Campos de interface em qualquer template (não só os de
+    rede) agora viram uma lista real no portal em vez de texto livre. Mais 5
+    templates: criar/remover VLAN, adicionar/remover VLAN de uma porta
+    trunk, adicionar/remover IP de uma interface, criar/remover
+    sub-interface 802.1Q.
 
-**Pendente:** `exabgp.service` ainda não está ativo em produção — aguardando
-confirmação após aplicação da config BGP no roteador de borda real. Fase 5 (IA)
-sem pipeline automático de eventos ainda, só análise sob demanda.
+**Pendente:** Fase 5 (IA) sem pipeline automático de eventos ainda, só
+análise sob demanda.
 
 ## Estrutura
 
@@ -73,6 +82,52 @@ sem pipeline automático de eventos ainda, só análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.13.0 — 2026-07-02 — Visualização por operadora, descoberta de interfaces/VLANs, 5 templates novos
+- `discover_all()` (novo) lê BGP + `display ip interface brief` + `display
+  vlan brief` numa única conexão SSH (evita 3 conexões separadas pra montar
+  a tela de descoberta do portal). `discover_bgp()` original continua
+  existindo à parte, sem quebrar quem já usava só ela.
+- `discover_peer_routes()` (novo): `display bgp routing-table peer {ip}
+  advertised-routes`/`received-routes` — resolve diretamente o pedido de
+  "ver redes/hosts advertidos por operadora": lista os prefixos reais sendo
+  anunciados pra (ou recebidos de) um peer específico.
+- 5 templates novos: `vlan_create_toggle` (criar/remover VLAN),
+  `vlan_trunk_toggle` (add/remover VLAN de uma porta trunk),
+  `interface_ip_toggle` (add/remover IP de uma interface),
+  `vlan_subinterface_create`/`vlan_subinterface_remove` (sub-interface
+  802.1Q) — os 3 primeiros com reversão simétrica via `undo_command_map`
+  (mesmo mecanismo do BGP peer toggle), os 2 últimos com `commands`/
+  `undo_commands` fixos (criar/remover não são simétricos: criar precisa de
+  3 parâmetros, remover só de 2) — reversão automática desse par é best-effort
+  (recria a sub-interface vazia, sem IP/VLAN) e depende mais do rollback
+  point nativo do equipamento pra ser fiel, mesma ressalva já documentada
+  pro template de interface anterior.
+- Portal: qualquer campo do tipo `interface_name` em qualquer template (não
+  só os novos) agora vira uma lista de interfaces reais depois da
+  descoberta, não só os campos específicos de BGP.
+- **Dois bugs reais encontrados e corrigidos testando pela primeira vez
+  contra o roteador de borda real** (`warmode.yaml` foi preenchido em
+  produção nesta mesma janela de trabalho — primeira validação de verdade
+  do módulo `routercfg` contra hardware, não só mock):
+  1. Nomes de interface podem começar com dígito (ex: `100GE0/1/54`,
+     `25GE0/1/29(10G)`) — o regex de descoberta de interfaces assumia que
+     todo nome começava com letra (`GigabitEthernet...`) e simplesmente não
+     casava essas linhas, retornando uma lista vazia.
+  2. Um bug mais sutil e mais sério: os regexes de VLAN/interface usavam
+     `\s*`/`\s+` (que inclui `\n`) posicionados ANTES de um grupo de captura
+     — quando a coluna seguinte vinha em branco (comum: VLAN sem nome/portas
+     configurados), esse separador "atravessava" a quebra de linha e o grupo
+     de captura seguinte recomeçava a casar já na PRÓXIMA linha, misturando
+     o VID/status de uma VLAN com o conteúdo da vizinha. `^`/`$` com `re.M`
+     não protegem contra isso — só ancoram início/fim de linha, não impedem
+     um separador guloso no meio do padrão de cruzar pra outra linha. Fix:
+     trocar `\s`/`\s+` por `[ \t]`/`[ \t]+` nesses dois regexes (espaço/tab
+     não incluem `\n`). Testes de regressão novos cobrem exatamente esse
+     cenário (VLAN com nome/portas em branco seguida de outra VLAN).
+- 20 testes novos (55 no total) — incluindo os dois casos de regressão acima
+  com amostras baseadas na saída real do equipamento (IDs/nomes genéricos,
+  sem dado de cliente/operadora real).
 
 ### v1.12.0 — 2026-07-02 — Descoberta de BGP real: subir/derrubar operadora e anunciar/remover prefixo
 - Novo `routercfg/discovery.py`: lê `display current-configuration

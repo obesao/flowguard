@@ -590,10 +590,10 @@ def cmd_routercfg_revert(args: argparse.Namespace, sock_path: str) -> None:
 
 
 def cmd_routercfg_discover(args: argparse.Namespace, sock_path: str) -> None:
-    from routercfg.discovery import discover_bgp
+    from routercfg.discovery import discover_all
     from routercfg.templates import ValidationError
     try:
-        result = discover_bgp()
+        result = discover_all()
     except ValidationError as exc:
         console.print(f"[red]Erro:[/red] {exc}")
         raise SystemExit(1)
@@ -616,6 +616,42 @@ def cmd_routercfg_discover(args: argparse.Namespace, sock_path: str) -> None:
     for n in result["networks"]:
         nets_table.add_row(n["cidr"])
     console.print(nets_table)
+    if_table = Table(title="Interfaces")
+    if_table.add_column("Nome")
+    if_table.add_column("IP")
+    if_table.add_column("Físico")
+    if_table.add_column("Protocolo")
+    for i in result["interfaces"]:
+        phy = "[green]up[/green]" if i["physical"] == "up" else ("[yellow]admin-down[/yellow]" if i["admin_down"] else "[red]down[/red]")
+        if_table.add_row(i["name"], i["ip"] or "-", phy, i["protocol"])
+    console.print(if_table)
+    vlan_table = Table(title="VLANs")
+    vlan_table.add_column("VID")
+    vlan_table.add_column("Nome")
+    vlan_table.add_column("Status")
+    vlan_table.add_column("Portas")
+    for v in result["vlans"]:
+        vlan_table.add_row(v["vlan_id"], v["name"] or "-", v["status"], v["ports"] or "-")
+    console.print(vlan_table)
+
+
+def cmd_routercfg_routes(args: argparse.Namespace, sock_path: str) -> None:
+    from routercfg.discovery import discover_peer_routes
+    from routercfg.templates import ValidationError
+    direction = "received" if args.received else "advertised"
+    try:
+        result = discover_peer_routes(args.peer_ip, direction=direction)
+    except ValidationError as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise SystemExit(1)
+    except Exception as exc:
+        console.print(f"[red]Falha ao consultar o roteador via SSH:[/red] {exc}")
+        raise SystemExit(1)
+    table = Table(title=f"Rotas {direction} — peer {args.peer_ip} ({len(result['prefixes'])} prefixo(s))")
+    table.add_column("Prefixo")
+    for p in result["prefixes"]:
+        table.add_row(p)
+    console.print(table)
 
 
 def cmd_routercfg_history(args: argparse.Namespace, sock_path: str) -> None:
@@ -796,8 +832,13 @@ def main() -> None:
     p_rc_history.add_argument("--limit", type=int, default=20)
     p_rc_history.set_defaults(func=cmd_routercfg_history)
 
-    p_rc_discover = routercfg_sub.add_parser("discover", help="lê a config BGP real do roteador (peers, AS local, prefixos anunciados)")
+    p_rc_discover = routercfg_sub.add_parser("discover", help="lê a config real do roteador (BGP, interfaces, VLANs)")
     p_rc_discover.set_defaults(func=cmd_routercfg_discover)
+
+    p_rc_routes = routercfg_sub.add_parser("routes", help="rotas anunciadas/recebidas de um peer BGP específico")
+    p_rc_routes.add_argument("peer_ip")
+    p_rc_routes.add_argument("--received", action="store_true", help="mostra rotas recebidas em vez de anunciadas")
+    p_rc_routes.set_defaults(func=cmd_routercfg_routes)
 
     sub.add_parser("reload").set_defaults(func=cmd_reload)
     sub.add_parser("stop").set_defaults(func=cmd_stop)

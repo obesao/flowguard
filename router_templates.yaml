@@ -243,3 +243,164 @@ templates:
       - "bgp {as_number}"
       - "{action_undo_cmd}"
       - "quit"
+
+  - id: vlan_create_toggle
+    label: "Criar/remover VLAN"
+    category: vlan
+    description: "Cria ou remove uma VLAN no nível global do equipamento."
+    device_name: "NE8000 borda"
+    fields:
+      - name: vlan_id
+        label: "VLAN ID"
+        type: int_range
+        min: 1
+        max: 4094
+        required: true
+      - name: action
+        label: "Ação"
+        type: enum
+        options: ["create", "remove"]
+        required: true
+        command_map:
+          create: "vlan {vlan_id}"
+          remove: "undo vlan {vlan_id}"
+        undo_command_map:
+          create: "undo vlan {vlan_id}"
+          remove: "vlan {vlan_id}"
+    commands:
+      - "{action_cmd}"
+      - "quit"
+    undo_commands:
+      - "{action_undo_cmd}"
+      - "quit"
+
+  - id: vlan_trunk_toggle
+    label: "Adicionar/remover VLAN de uma porta trunk"
+    category: vlan
+    description: >
+      Adiciona ou remove uma VLAN da lista "allow-pass" de uma porta já
+      configurada como trunk — não muda o link-type da porta (se ela não for
+      trunk ainda, aplique isso depois de configurar o trunk manualmente).
+    device_name: "NE8000 borda"
+    fields:
+      - name: interface
+        label: "Interface (porta trunk)"
+        type: interface_name
+        required: true
+      - name: vlan_id
+        label: "VLAN ID"
+        type: int_range
+        min: 1
+        max: 4094
+        required: true
+      - name: action
+        label: "Ação"
+        type: enum
+        options: ["add", "remove"]
+        required: true
+        command_map:
+          add: "port trunk allow-pass vlan {vlan_id}"
+          remove: "undo port trunk allow-pass vlan {vlan_id}"
+        undo_command_map:
+          add: "undo port trunk allow-pass vlan {vlan_id}"
+          remove: "port trunk allow-pass vlan {vlan_id}"
+    commands:
+      - "interface {interface}"
+      - "{action_cmd}"
+      - "quit"
+    undo_commands:
+      - "interface {interface}"
+      - "{action_undo_cmd}"
+      - "quit"
+
+  - id: interface_ip_toggle
+    label: "Adicionar/remover IP de uma interface"
+    category: interface
+    description: "Adiciona ou remove um endereço IP de uma interface ou sub-interface existente."
+    device_name: "NE8000 borda"
+    fields:
+      - name: interface
+        label: "Interface"
+        type: interface_name
+        required: true
+      - name: ip
+        label: "IP (CIDR)"
+        type: ipv4_cidr
+        required: true
+      - name: action
+        label: "Ação"
+        type: enum
+        options: ["add", "remove"]
+        required: true
+        command_map:
+          add: "ip address {ip_network} {ip_mask}"
+          remove: "undo ip address {ip_network} {ip_mask}"
+        undo_command_map:
+          add: "undo ip address {ip_network} {ip_mask}"
+          remove: "ip address {ip_network} {ip_mask}"
+    commands:
+      - "interface {interface}"
+      - "{action_cmd}"
+      - "quit"
+    undo_commands:
+      - "interface {interface}"
+      - "{action_undo_cmd}"
+      - "quit"
+
+  - id: vlan_subinterface_create
+    label: "Criar sub-interface VLAN (802.1Q)"
+    category: interface
+    description: >
+      Cria uma sub-interface com encapsulamento dot1q e atribui um IP — uso
+      típico: provisionar um cliente/serviço novo numa VLAN. Reversão remove
+      a sub-interface inteira.
+    device_name: "NE8000 borda"
+    fields:
+      - name: interface
+        label: "Interface física"
+        type: interface_name
+        required: true
+      - name: vlan_id
+        label: "VLAN ID"
+        type: int_range
+        min: 1
+        max: 4094
+        required: true
+      - name: ip
+        label: "IP (CIDR)"
+        type: ipv4_cidr
+        required: true
+    commands:
+      - "interface {interface}.{vlan_id}"
+      - "vlan-type dot1q {vlan_id}"
+      - "ip address {ip_network} {ip_mask}"
+      - "quit"
+    undo_commands:
+      - "undo interface {interface}.{vlan_id}"
+
+  - id: vlan_subinterface_remove
+    label: "Remover sub-interface VLAN"
+    category: interface
+    description: >
+      Remove uma sub-interface inteira (802.1Q). Atenção: a reversão
+      automática recria a sub-interface vazia (sem VLAN/IP configurados) —
+      não restaura a config original. Pra reversão fiel, dependa do ponto de
+      rollback nativo do equipamento (criado automaticamente antes de
+      aplicar, quando suportado).
+    device_name: "NE8000 borda"
+    fields:
+      - name: interface
+        label: "Interface física"
+        type: interface_name
+        required: true
+      - name: vlan_id
+        label: "VLAN ID"
+        type: int_range
+        min: 1
+        max: 4094
+        required: true
+    commands:
+      - "undo interface {interface}.{vlan_id}"
+    undo_commands:
+      - "interface {interface}.{vlan_id}"
+      - "quit"
