@@ -188,3 +188,40 @@ def discover_peer_routes(peer_ip: str, direction: str = "advertised", device_nam
         except Exception:
             pass
     return parse_peer_routes(raw, peer_ip, direction)
+
+
+def is_external_operator(peer: dict, local_as: str | None) -> bool:
+    """Um peer conta como "operadora" (transit/peering externo) quando tem AS
+    remoto conhecido e diferente do AS local — filtra fora sessões iBGP
+    internas (equipamentos do próprio provedor, ex: appliance de mitigação,
+    outro roteador do mesmo AS) que também aparecem em `peers` mas não são
+    "operadoras" no sentido que o operador da rede quer dizer."""
+    return bool(peer.get("remote_as")) and peer["remote_as"] != local_as
+
+
+def discover_operator_routes(direction: str = "advertised", device_name: str | None = None) -> dict:
+    """Relatório "IPs advertidos pra cada operadora": lê a config BGP e, na
+    MESMA conexão SSH, consulta as rotas anunciadas/recebidas de cada peer
+    externo (AS remoto diferente do local) — evita abrir uma conexão SSH por
+    peer (seriam dezenas em uma rede com vários upstreams/peering de IX)."""
+    if direction not in ("advertised", "received"):
+        raise ValidationError("direction deve ser 'advertised' ou 'received'")
+
+    device = _device_for(device_name)
+    conn = _connect(device)
+    try:
+        bgp_raw = conn.send_command(DISCOVER_COMMAND, read_timeout=30)
+        bgp = parse_bgp_config(bgp_raw)
+        local_as = bgp["local_as"]
+        operators = [p for p in bgp["peers"] if is_external_operator(p, local_as)]
+        for op in operators:
+            raw = conn.send_command(f"display bgp routing-table peer {op['peer_ip']} {direction}-routes", read_timeout=30)
+            routes = parse_peer_routes(raw, op["peer_ip"], direction)
+            op["prefixes"] = routes["prefixes"]
+            op["total_reported"] = routes["total_reported"]
+    finally:
+        try:
+            conn.disconnect()
+        except Exception:
+            pass
+    return {"local_as": local_as, "direction": direction, "operators": operators}

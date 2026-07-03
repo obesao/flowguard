@@ -242,6 +242,9 @@ def cmd_attack_detail(attack_id: int, sock_path: str) -> None:
 
 
 def cmd_rules(args: argparse.Namespace, sock_path: str) -> None:
+    if getattr(args, "history", False):
+        _cmd_rules_history(args)
+        return
     resp = send_command(sock_path, {"cmd": "rules"})
     die_on_error(resp)
     table = Table(title="Regras FlowSpec Ativas")
@@ -256,6 +259,44 @@ def cmd_rules(args: argparse.Namespace, sock_path: str) -> None:
         table.add_row(str(row["id"]), row.get("src_prefix") or "-", row.get("dst_prefix") or "-", row["action"], f"{ttl}s")
     if not resp["rules"]:
         console.print("[green]Nenhuma regra FlowSpec ativa.[/green]")
+    else:
+        console.print(table)
+
+
+def _cmd_rules_history(args: argparse.Namespace) -> None:
+    """Lê TODAS as regras FlowSpec/RTBH já criadas (ativas ou não) direto do
+    SQLite em modo read-only — não passa pelo socket/daemon (mesmo padrão
+    standalone do routercfg), então funciona mesmo se o daemon estiver fora
+    do ar e não precisa de nenhuma mudança no processo já rodando."""
+    import sqlite3
+
+    from collector import storage
+
+    with open(args.config, "r", encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh)
+    db_path = cfg["database"]["path"]
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        rules = storage.list_flowspec_rules(conn, active_only=False)
+    finally:
+        conn.close()
+
+    table = Table(title=f"Histórico completo de regras FlowSpec/RTBH ({len(rules)})")
+    table.add_column("ID")
+    table.add_column("Criada em")
+    table.add_column("Origem")
+    table.add_column("Destino")
+    table.add_column("Ação")
+    table.add_column("Rótulo")
+    table.add_column("Status")
+    for row in rules:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created_at"]))
+        status = "[green]ativa[/green]" if row["active"] else "[dim]expirada/removida[/dim]"
+        table.add_row(str(row["id"]), when, row.get("src_prefix") or "-", row.get("dst_prefix") or "-",
+                      row["action"], row.get("label") or "-", status)
+    if not rules:
+        console.print("[yellow]Nenhuma regra FlowSpec/RTBH foi criada ainda.[/yellow]")
     else:
         console.print(table)
 
@@ -654,6 +695,29 @@ def cmd_routercfg_routes(args: argparse.Namespace, sock_path: str) -> None:
     console.print(table)
 
 
+def cmd_routercfg_operators(args: argparse.Namespace, sock_path: str) -> None:
+    from routercfg.discovery import discover_operator_routes
+    from routercfg.templates import ValidationError
+    direction = "received" if args.received else "advertised"
+    try:
+        result = discover_operator_routes(direction=direction)
+    except ValidationError as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise SystemExit(1)
+    except Exception as exc:
+        console.print(f"[red]Falha ao consultar o roteador via SSH:[/red] {exc}")
+        raise SystemExit(1)
+    console.print(f"AS local: [bold]{result['local_as'] or '?'}[/bold] — rotas {direction}")
+    for op in result["operators"]:
+        table = Table(title=f"{op['peer_ip']} (AS{op['remote_as']}) {op.get('description') or ''} — {len(op['prefixes'])} prefixo(s)")
+        table.add_column("Prefixo")
+        for p in op["prefixes"]:
+            table.add_row(p)
+        if not op["prefixes"]:
+            table.add_row("[dim](nenhum)[/dim]")
+        console.print(table)
+
+
 def cmd_routercfg_history(args: argparse.Namespace, sock_path: str) -> None:
     from routercfg.apply import list_history
     jobs = list_history(limit=args.limit)
@@ -724,7 +788,9 @@ def main() -> None:
                             help="mostra detalhamento (com análise de IA, se disponível) de um ataque específico")
     p_attacks.set_defaults(func=cmd_attacks)
 
-    sub.add_parser("rules").set_defaults(func=cmd_rules)
+    p_rules = sub.add_parser("rules")
+    p_rules.add_argument("--history", action="store_true", help="mostra TODAS as regras já criadas (ativas ou não), lendo o SQLite direto")
+    p_rules.set_defaults(func=cmd_rules)
 
     p_ban = sub.add_parser("ban")
     p_ban.add_argument("target")
@@ -839,6 +905,10 @@ def main() -> None:
     p_rc_routes.add_argument("peer_ip")
     p_rc_routes.add_argument("--received", action="store_true", help="mostra rotas recebidas em vez de anunciadas")
     p_rc_routes.set_defaults(func=cmd_routercfg_routes)
+
+    p_rc_operators = routercfg_sub.add_parser("operators", help="IPs anunciados/recebidos de TODAS as operadoras (peers com AS remoto != AS local)")
+    p_rc_operators.add_argument("--received", action="store_true", help="mostra rotas recebidas em vez de anunciadas")
+    p_rc_operators.set_defaults(func=cmd_routercfg_operators)
 
     sub.add_parser("reload").set_defaults(func=cmd_reload)
     sub.add_parser("stop").set_defaults(func=cmd_stop)

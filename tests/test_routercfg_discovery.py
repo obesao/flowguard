@@ -215,3 +215,18 @@ def test_discover_peer_routes_rejects_injection_in_peer_ip():
     from routercfg.discovery import discover_peer_routes
     with pytest.raises(ValidationError):
         discover_peer_routes("200.201.202.1; reboot", direction="advertised")
+
+
+def test_is_external_operator_true_for_different_remote_as():
+    from routercfg.discovery import is_external_operator
+    assert is_external_operator({"remote_as": "65001"}, "65000") is True
+
+
+def test_is_external_operator_false_for_same_as_ibgp():
+    from routercfg.discovery import is_external_operator
+    assert is_external_operator({"remote_as": "65000"}, "65000") is False
+
+
+def test_is_external_operator_false_when_remote_as_unknown():
+    from routercfg.discovery import is_external_operator
+    assert is_external_operator({"remote_as": None}, "65000") is False

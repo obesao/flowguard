@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.13.0**
+**Versão atual: v1.14.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,18 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.14.0 — 2026-07-02 — Relatório consolidado: prefixos por operadora + histórico de regras FlowSpec/RTBH
+- `discover_operator_routes()` (novo): numa única conexão SSH, lê a config
+  BGP e consulta as rotas anunciadas/recebidas de cada peer EXTERNO (AS
+  remoto diferente do local — `is_external_operator()`, nova função de
+  filtro), sem abrir uma conexão por peer. `flowguard-cli routercfg
+  operators [--received]` expõe isso.
+- `flowguard-cli rules --history`: mostra TODAS as regras FlowSpec/RTBH já
+  criadas (ativas ou não), lendo o SQLite direto em modo read-only — não
+  passa pelo socket/daemon (mesmo padrão standalone do resto do
+  `routercfg`), então funciona mesmo com o daemon fora do ar.
+- 3 testes novos pra `is_external_operator()` (58 no total).
 
 ### v1.13.0 — 2026-07-02 — Visualização por operadora, descoberta de interfaces/VLANs, 5 templates novos
 - `discover_all()` (novo) lê BGP + `display ip interface brief` + `display
