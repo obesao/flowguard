@@ -18,7 +18,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 
 from collector import configio
-from warmode.executor import list_devices, run_war_mode
+from warmode.executor import list_devices, run_war_mode, run_war_mode_revert
 
 DEFAULT_CONFIG_PATH = "/root/flowguard/config.yaml"
 DEFAULT_SOCKET_PATH = "/var/run/flowguard.sock"
@@ -533,10 +533,13 @@ def cmd_warmode_list(args: argparse.Namespace, sock_path: str) -> None:
     table.add_column("Host")
     table.add_column("Tipo")
     table.add_column("Comandos")
+    table.add_column("Comandos de reversão")
     for d in devices:
         n = d["n_commands"]
         cmds_str = str(n) if n else "[red]0 (nada vai rodar aqui)[/red]"
-        table.add_row(d["name"], d["host"] or "-", d["device_type"] or "-", cmds_str)
+        n_revert = d["n_revert_commands"]
+        revert_str = str(n_revert) if n_revert else "[yellow]0 (sem reversão)[/yellow]"
+        table.add_row(d["name"], d["host"] or "-", d["device_type"] or "-", cmds_str, revert_str)
     console.print(table)
 
 
@@ -758,6 +761,28 @@ def cmd_warmode_run(args: argparse.Namespace, sock_path: str) -> None:
             console.print(Panel(r.get("error", "erro desconhecido"), title=f"[red]FALHOU[/red] {r['device']}", border_style="red"))
 
 
+def cmd_warmode_revert(args: argparse.Namespace, sock_path: str) -> None:
+    devices = list_devices()
+    if not devices:
+        console.print("[yellow]Nenhum equipamento configurado em warmode.yaml.[/yellow]")
+        return
+    console.print(Panel(
+        "\n".join(f"- {d['name']} ({d['host']}): {d['n_revert_commands']} comando(s) de reversão" for d in devices),
+        title="[bold]Sair do Modo Guerra[/bold] — isto vai rodar os comandos de reversão nestes equipamentos agora",
+        border_style="yellow",
+    ))
+    if not args.yes and not Confirm.ask("Confirma a reversão?", default=False):
+        console.print("Cancelado.")
+        return
+    console.print("Executando em paralelo...")
+    results = run_war_mode_revert(trigger="cli")
+    for r in results:
+        if r["ok"]:
+            console.print(Panel(r["output"] or "(sem saída)", title=f"[green]OK[/green] {r['device']} ({r['elapsed_s']}s)"))
+        else:
+            console.print(Panel(r.get("error", "erro desconhecido"), title=f"[red]FALHOU[/red] {r['device']}", border_style="red"))
+
+
 def run_interactive(sock_path: str, interval: float) -> None:
     try:
         with Live(build_dashboard(sock_path), console=console, screen=True, auto_refresh=False) as live:
@@ -870,6 +895,9 @@ def main() -> None:
     p_warmode_run = warmode_sub.add_parser("run")
     p_warmode_run.add_argument("--yes", action="store_true", help="pula a confirmação interativa")
     p_warmode_run.set_defaults(func=cmd_warmode_run)
+    p_warmode_revert = warmode_sub.add_parser("revert", help="Sair do Modo Guerra — roda os comandos de reversão")
+    p_warmode_revert.add_argument("--yes", action="store_true", help="pula a confirmação interativa")
+    p_warmode_revert.set_defaults(func=cmd_warmode_revert)
 
     p_routercfg = sub.add_parser("routercfg", help="edita configuração do roteador de borda via templates validados (SSH)")
     p_routercfg.set_defaults(func=cmd_routercfg_list)

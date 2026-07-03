@@ -25,6 +25,14 @@
 # Comandos rodam em sequência dentro de UM equipamento, mas todos os
 # equipamentos rodam em PARALELO entre si (pra não perder tempo num cenário de
 # ataque acontecendo agora).
+#
+# revert_commands (opcional): rodados pelo botão "Sair do Modo Guerra" — o
+# inverso dos "commands" (ex.: se "commands" faz "undo rule 5"/"rule 5 permit
+# ...", "revert_commands" desfaz isso de volta pro estado original). Mesmo
+# formato/regras de "commands" (system-view como primeiro item entra em modo
+# de configuração automaticamente). Equipamento sem revert_commands configurado
+# simplesmente não roda nada no "Sair do Modo Guerra" (erro tratado, não trava
+# os outros equipamentos).
 
 devices:
   - name: "NE8000BGP"
@@ -35,6 +43,7 @@ devices:
     password: "TROQUE_AQUI"
     enable_mode: false
     commands: []   # ex.: ["system-view", "..."]
+    revert_commands: []   # ex.: ["system-view", "..."] pra desfazer o acima
 
   - name: "A10 Thunder"
     host: 0.0.0.0
@@ -44,3 +53,4 @@ devices:
     password: "TROQUE_AQUI"
     enable_mode: false
     commands: []   # a definir
+    revert_commands: []   # a definir

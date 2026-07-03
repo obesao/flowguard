@@ -55,6 +55,7 @@ def load_devices_masked(config_path: str = DEFAULT_CONFIG_PATH) -> list[dict]:
             "has_password": bool(d.get("password")),
             "enable_mode": bool(d.get("enable_mode", False)),
             "commands": d.get("commands") or [],
+            "revert_commands": d.get("revert_commands") or [],
         })
     return out
 
@@ -75,6 +76,7 @@ def save_devices(devices: list[dict], config_path: str = DEFAULT_CONFIG_PATH) ->
             "username": d.get("username", ""),
             "enable_mode": bool(d.get("enable_mode", False)),
             "commands": [c for c in (d.get("commands") or []) if c.strip()],
+            "revert_commands": [c for c in (d.get("revert_commands") or []) if c.strip()],
         }
         new_password = d.get("password") or ""
         if new_password:
@@ -91,12 +93,31 @@ def save_devices(devices: list[dict], config_path: str = DEFAULT_CONFIG_PATH) ->
     os.chmod(config_path, 0o600)
 
 
-def _run_device(device: dict, timeout: float) -> dict:
+def _send_commands(conn, commands: list[str], timeout: float) -> str:
+    outputs = []
+    if commands and commands[0].strip().lower() == "system-view":
+        # entra em system-view: o prompt muda de "<host>" (modo usuário) pra
+        # "[host]" (config) — send_command() por linha espera sempre o prompt
+        # original e trava até o timeout. send_config_set() entra/sai do modo
+        # de config sozinho e reconhece os dois formatos de prompt.
+        cfg_commands = [c for c in commands[1:] if c.strip() and c.strip() != "#"]
+        out = conn.send_config_set(cfg_commands, read_timeout=timeout)
+        outputs.append(f"$ system-view\n{out}")
+    else:
+        for cmd in commands:
+            out = conn.send_command(cmd, read_timeout=timeout, strip_prompt=False, strip_command=False)
+            outputs.append(f"$ {cmd}\n{out}")
+    return "\n\n".join(outputs)
+
+
+def _run_device(device: dict, timeout: float, mode: str = "apply") -> dict:
     name = device.get("name") or device.get("host", "?")
-    commands = device.get("commands") or []
+    commands = device.get("commands" if mode == "apply" else "revert_commands") or []
     t0 = time.monotonic()
     if not commands:
-        return {"device": name, "ok": False, "error": "nenhum comando configurado pra este equipamento", "output": "", "elapsed_s": 0.0}
+        error = ("nenhum comando configurado pra este equipamento" if mode == "apply"
+                  else "nenhum comando de reversão configurado pra este equipamento")
+        return {"device": name, "ok": False, "error": error, "output": "", "elapsed_s": 0.0}
 
     conn = None
     try:
@@ -113,21 +134,9 @@ def _run_device(device: dict, timeout: float) -> dict:
         )
         if device.get("enable_mode"):
             conn.enable()
-        outputs = []
-        if commands and commands[0].strip().lower() == "system-view":
-            # entra em system-view: o prompt muda de "<host>" (modo usuário) pra
-            # "[host]" (config) — send_command() por linha espera sempre o prompt
-            # original e trava até o timeout. send_config_set() entra/sai do modo
-            # de config sozinho e reconhece os dois formatos de prompt.
-            cfg_commands = [c for c in commands[1:] if c.strip() and c.strip() != "#"]
-            out = conn.send_config_set(cfg_commands, read_timeout=timeout)
-            outputs.append(f"$ system-view\n{out}")
-        else:
-            for cmd in commands:
-                out = conn.send_command(cmd, read_timeout=timeout, strip_prompt=False, strip_command=False)
-                outputs.append(f"$ {cmd}\n{out}")
+        output = _send_commands(conn, commands, timeout)
         return {
-            "device": name, "ok": True, "output": "\n\n".join(outputs),
+            "device": name, "ok": True, "output": output,
             "elapsed_s": round(time.monotonic() - t0, 1),
         }
     except NetmikoAuthenticationException:
@@ -144,9 +153,9 @@ def _run_device(device: dict, timeout: float) -> dict:
                 pass
 
 
-def _audit(trigger: str, results: list[dict]) -> None:
+def _audit(trigger: str, mode: str, results: list[dict]) -> None:
     record = {
-        "ts": int(time.time()), "trigger": trigger,
+        "ts": int(time.time()), "trigger": trigger, "mode": mode,
         "results": [{"device": r["device"], "ok": r["ok"], "elapsed_s": r.get("elapsed_s"),
                      "error": r.get("error")} for r in results],
     }
@@ -158,7 +167,7 @@ def _audit(trigger: str, results: list[dict]) -> None:
         LOG.exception("falha ao gravar audit log do modo guerra")
 
 
-def _notify_whatsapp(trigger: str, results: list[dict]) -> None:
+def _notify_whatsapp(trigger: str, mode: str, results: list[dict]) -> None:
     """Lê alerts.whatsapp direto do config.yaml do FlowGuard (só leitura de arquivo,
     não depende do daemon/socket estar de pé — mantém o executor standalone)."""
     try:
@@ -169,7 +178,9 @@ def _notify_whatsapp(trigger: str, results: list[dict]) -> None:
         return
     ok_devices = [r["device"] for r in results if r["ok"]]
     fail_devices = [r["device"] for r in results if not r["ok"]]
-    message = f"🚨 MODO GUERRA acionado (gatilho: {trigger})"
+    action_label = "acionado" if mode == "apply" else "revertido (saída)"
+    icon = "🚨" if mode == "apply" else "🔙"
+    message = f"{icon} MODO GUERRA {action_label} (gatilho: {trigger})"
     if ok_devices:
         message += f"\nOK: {', '.join(ok_devices)}"
     if fail_devices:
@@ -187,26 +198,37 @@ def list_devices(config_path: str = DEFAULT_CONFIG_PATH) -> list[dict]:
             "host": d.get("host"),
             "device_type": d.get("device_type"),
             "n_commands": len(d.get("commands") or []),
+            "n_revert_commands": len(d.get("revert_commands") or []),
         }
         for d in (cfg.get("devices") or [])
     ]
 
 
-def run_war_mode(config_path: str = DEFAULT_CONFIG_PATH, timeout: float = 25.0, trigger: str = "manual") -> list[dict]:
+def _run_war_mode(mode: str, config_path: str, timeout: float, trigger: str) -> list[dict]:
     cfg = load_config(config_path)
     devices = cfg.get("devices") or []
     if not devices:
         return []
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(devices)) as pool:
-        futures = {pool.submit(_run_device, d, timeout): d for d in devices}
+        futures = {pool.submit(_run_device, d, timeout, mode): d for d in devices}
         for fut in concurrent.futures.as_completed(futures):
             results.append(fut.result())
-    LOG.warning("MODO GUERRA acionado (%s): %s", trigger,
+    LOG.warning("MODO GUERRA %s (%s): %s", mode, trigger,
                 [{"device": r["device"], "ok": r["ok"]} for r in results])
-    _audit(trigger, results)
-    _notify_whatsapp(trigger, results)
+    _audit(trigger, mode, results)
+    _notify_whatsapp(trigger, mode, results)
     return results
+
+
+def run_war_mode(config_path: str = DEFAULT_CONFIG_PATH, timeout: float = 25.0, trigger: str = "manual") -> list[dict]:
+    return _run_war_mode("apply", config_path, timeout, trigger)
+
+
+def run_war_mode_revert(config_path: str = DEFAULT_CONFIG_PATH, timeout: float = 25.0, trigger: str = "manual") -> list[dict]:
+    """Sai do Modo Guerra: roda os comandos de reversão de cada equipamento (o
+    inverso dos comandos aplicados), pra voltar o estado de antes do incidente."""
+    return _run_war_mode("revert", config_path, timeout, trigger)
 
 
 if __name__ == "__main__":
