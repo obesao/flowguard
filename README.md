@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.17.0**
+**Versão atual: v1.18.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,25 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.18.0 — 2026-07-03 — Corrige Modo Guerra travando em equipamentos com system-view
+- **Bug real reportado pelo usuário**: um equipamento do Modo Guerra
+  (sequência de comandos começando em `system-view`, ex. edição de ACL)
+  falhava com `Pattern not detected: '<host>' in output` após ~27s.
+  `warmode/executor.py` mandava cada comando via `send_command()`, que
+  sempre espera o prompt de modo usuário (`<host>`) capturado no login —
+  mas ao entrar em `system-view` o prompt vira modo config (`[host]`) e
+  essa espera nunca é satisfeita.
+- Corrigido: sequências que começam com `system-view` agora usam
+  `send_config_set()`, que entra/sai do modo de configuração sozinho e
+  reconhece os dois formatos de prompt. Linhas vazias/`#` (separadores de
+  bloco de config, não comandos de verdade) são filtradas antes de enviar.
+  Validado com Netmiko mockado reproduzindo a sequência real de comandos.
+- **Nota:** um bug relacionado mas distinto (prompt de confirmação de
+  commit ao SAIR do modo config, ver v1.17.0) já foi corrigido nos módulos
+  `routercfg`/`edge_mitigation` trocando `device_type` pra `huawei_vrpv8` —
+  não se aplica a este equipamento, que é hardware/versão de VRP diferente
+  do NE8000 principal (confirmado com o usuário).
 
 ### v1.17.0 — 2026-07-02 — Corrige driver Netmiko: huawei_vrp não aplica config em NE8000 de carrier real
 - **Bug real, achado e corrigido testando pela primeira vez uma aplicação de
