@@ -3,7 +3,9 @@
 Fonte das credenciais de conexão: warmode.yaml (mesmo arquivo do "Modo Guerra",
 ver flowguard/warmode/executor.py) — reaproveita a MESMA fonte de verdade em vez
 de duplicar credenciais SSH num segundo arquivo fora do git. O equipamento é
-escolhido por nome (`device_name` do template, ou "NE8000 borda" por padrão).
+escolhido por nome (`device_name` do template, ou "NE8000BGP" por padrão —
+mesmo equipamento usado pela mitigação de borda do ClientGuard, ver
+clientguard/edge_mitigation.py).
 
 Segurança de aplicação (ver prompt original / README):
   1. Cria um ponto de rollback nativo do VRP antes de aplicar (best-effort —
@@ -44,7 +46,7 @@ LOG = logging.getLogger("flowguard.routercfg")
 
 JOBS_DIR = Path("/root/flowguard/routercfg_jobs")
 AUDIT_LOG_PATH = "/var/log/flowguard-routercfg-audit.jsonl"
-DEFAULT_DEVICE_NAME = "NE8000 borda"
+DEFAULT_DEVICE_NAME = "NE8000BGP"
 DEFAULT_CONFIRM_WINDOW_S = 300
 _ROLLBACK_POINT_RE = re.compile(r"ID is (\d+)")
 

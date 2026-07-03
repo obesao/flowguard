@@ -36,7 +36,7 @@ templates:
       Configura a exportação de NetStream (NetFlow) global e habilita nas
       interfaces informadas — resolve a configuração que hoje é feita manualmente
       no roteador pra alimentar o FlowGuard.
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: collector_ip
         label: "IP do coletor (FlowGuard)"
@@ -72,7 +72,7 @@ templates:
     label: "Rota estática"
     category: roteamento
     description: "Adiciona uma rota estática (ip route-static)."
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: dest
         label: "Destino (CIDR)"
@@ -94,7 +94,7 @@ templates:
     description: >
       Cria/ajusta uma regra numa ACL básica (2000-2999) pra permitir ou negar
       tráfego a partir de um prefixo de origem.
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: acl_number
         label: "Número da ACL básica"
@@ -130,7 +130,7 @@ templates:
       antes da mudança) — ela remove a descrição e deixa a interface "up" por
       segurança. Pra reversão fiel, dependa do ponto de rollback nativo do
       equipamento (criado automaticamente antes de aplicar, quando suportado).
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: interface
         label: "Interface"
@@ -169,7 +169,7 @@ templates:
       estabelecer/manter a sessão TCP) — pensado pra manutenção com uma
       operadora específica sem mexer nas outras. Use "Ler configuração atual
       (BGP)" no portal pra escolher o peer certo em vez de digitar o IP.
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: as_number
         label: "AS local"
@@ -212,7 +212,7 @@ templates:
       "network" original tinha uma route-policy associada (atributos
       customizados), o comando de reversão volta a anunciar o prefixo sem
       essa route-policy — confira depois de reverter.
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: as_number
         label: "AS local"
@@ -248,7 +248,7 @@ templates:
     label: "Criar/remover VLAN"
     category: vlan
     description: "Cria ou remove uma VLAN no nível global do equipamento."
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: vlan_id
         label: "VLAN ID"
@@ -281,7 +281,7 @@ templates:
       Adiciona ou remove uma VLAN da lista "allow-pass" de uma porta já
       configurada como trunk — não muda o link-type da porta (se ela não for
       trunk ainda, aplique isso depois de configurar o trunk manualmente).
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: interface
         label: "Interface (porta trunk)"
@@ -317,7 +317,7 @@ templates:
     label: "Adicionar/remover IP de uma interface"
     category: interface
     description: "Adiciona ou remove um endereço IP de uma interface ou sub-interface existente."
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: interface
         label: "Interface"
@@ -354,7 +354,7 @@ templates:
       Cria uma sub-interface com encapsulamento dot1q e atribui um IP — uso
       típico: provisionar um cliente/serviço novo numa VLAN. Reversão remove
       a sub-interface inteira.
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: interface
         label: "Interface física"
@@ -387,7 +387,7 @@ templates:
       não restaura a config original. Pra reversão fiel, dependa do ponto de
       rollback nativo do equipamento (criado automaticamente antes de
       aplicar, quando suportado).
-    device_name: "NE8000 borda"
+    device_name: "NE8000BGP"
     fields:
       - name: interface
         label: "Interface física"

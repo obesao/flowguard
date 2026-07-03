@@ -10,7 +10,7 @@ from routercfg import apply as routercfg_apply
 from routercfg.templates import ValidationError
 
 FAKE_DEVICE = {
-    "name": "NE8000 borda", "host": "10.77.10.1", "port": 22,
+    "name": "NE8000BGP", "host": "10.77.10.1", "port": 22,
     "device_type": "huawei_vrp", "username": "admin", "password": "x",
 }
 

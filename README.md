@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.14.0**
+**Versão atual: v1.15.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,17 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.15.0 — 2026-07-02 — Corrige nome do equipamento (NE8000BGP) em todos os templates
+- **Bug real**: `routercfg/apply.py` (`DEFAULT_DEVICE_NAME`) e os 11 templates
+  em `router_templates.yaml` ainda referenciavam `"NE8000 borda"` — nome
+  placeholder usado quando o módulo foi criado, antes do equipamento real
+  ser cadastrado em `warmode.yaml` como `NE8000BGP` (mesmo nome usado pela
+  mitigação de borda do ClientGuard, ver `clientguard/edge_mitigation.py`).
+  Com o nome desalinhado, toda aplicação de template falhava com
+  "equipamento não encontrado" mesmo já com credenciais reais configuradas.
+- Confirmado via CGI real: os 11 templates agora reportam `device_ready:
+  true` (antes: `false` em todos).
 
 ### v1.14.0 — 2026-07-02 — Relatório consolidado: prefixos por operadora + histórico de regras FlowSpec/RTBH
 - `discover_operator_routes()` (novo): numa única conexão SSH, lê a config
