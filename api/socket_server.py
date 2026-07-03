@@ -155,7 +155,8 @@ class SocketServer:
         return {"ok": True, "attack": attack, "detail": detail, "timeseries": timeseries}
 
     async def _cmd_rules(self, request: dict) -> dict:
-        rules = await self.daemon.run_read_db(storage.list_flowspec_rules)
+        history = bool(request.get("history", False))
+        rules = await self.daemon.run_read_db(storage.list_flowspec_rules, active_only=not history)
         return {"ok": True, "rules": rules}
 
     async def _cmd_monitor_list(self, request: dict) -> dict:
@@ -181,7 +182,8 @@ class SocketServer:
         target = request.get("target")
         if not target:
             return {"ok": False, "error": "target obrigatório"}
-        return await self.daemon.bgp_manager.ban(target, attack_id=request.get("attack_id"), ttl_s=request.get("ttl_s"))
+        return await self.daemon.bgp_manager.ban(target, attack_id=request.get("attack_id"), ttl_s=request.get("ttl_s"),
+                                                  origin=request.get("origin", "flowguard"))
 
     async def _cmd_unban(self, request: dict) -> dict:
         target = request.get("target")
@@ -202,7 +204,8 @@ class SocketServer:
             rule = raw_rule
         else:
             return {"ok": False, "error": "rule deve ser string ou objeto"}
-        return await self.daemon.bgp_manager.flowspec_add(rule, attack_id=request.get("attack_id"), ttl_s=request.get("ttl_s"))
+        return await self.daemon.bgp_manager.flowspec_add(rule, attack_id=request.get("attack_id"), ttl_s=request.get("ttl_s"),
+                                                            origin=request.get("origin", "flowguard"))
 
     async def _cmd_flowspec_del(self, request: dict) -> dict:
         rule_id = request.get("rule_id")

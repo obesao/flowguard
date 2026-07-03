@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.15.0**
+**Versão atual: v1.16.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,31 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.16.0 — 2026-07-02 — `origin` em flowspec_rules: base pra aba Regras unificada do portal
+Usuário pediu que a aba "Regras" do portal mostre TODA interação com a borda
+gerada tanto pelo FlowGuard quanto pelo ClientGuard, separado por aplicação.
+`flowspec_rules` já guardava histórico completo (soft-delete via `active`,
+nunca `DELETE`) cobrindo RTBH e FlowSpec juntos — só faltava saber QUEM pediu
+cada regra, já que RTBH/FlowSpec proxied pelo ClientGuard (`block_add`) vive
+na mesma tabela, só distinguível hoje por um `label` de texto livre.
+
+- `collector/storage.py`: nova coluna `origin` (`'flowguard'` | `'clientguard'`,
+  default `'flowguard'`) em `flowspec_rules`, com migração (`_migrate`) que
+  também faz um backfill de melhor esforço nas linhas antigas (`origin =
+  'clientguard' WHERE label LIKE '%ClientGuard%'`) — confirmado em produção:
+  2 das 15 regras históricas foram reclassificadas corretamente.
+- `bgp/manager.py`: `ban`/`flowspec_add` ganham parâmetro `origin: str =
+  "flowguard"`, persistido na regra.
+- `api/socket_server.py`: `_cmd_rules` ganha `history` (mesmo padrão de
+  `_cmd_attacks`, default só ativas); `_cmd_ban`/`_cmd_flowspec_add` repassam
+  `request.get("origin", "flowguard")`.
+- `clientguard/socket_server.py` (repo `clientguard`) — `_cmd_block_add` agora
+  manda `"origin": "clientguard"` no `flowspec_add` que pede pro FlowGuard.
+- `flowguard-cli.py`: `rules --history` ganha coluna "App".
+- 58 testes pytest continuam passando (nenhum teste específico de
+  `flowspec_rules`/`origin` foi adicionado aqui — a suíte atual do FlowGuard
+  cobre só `routercfg`; ver `clientguard` pro teste de `_cmd_block_add`).
 
 ### v1.15.0 — 2026-07-02 — Corrige nome do equipamento (NE8000BGP) em todos os templates
 - **Bug real**: `routercfg/apply.py` (`DEFAULT_DEVICE_NAME`) e os 11 templates

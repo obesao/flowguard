@@ -285,6 +285,7 @@ def _cmd_rules_history(args: argparse.Namespace) -> None:
     table = Table(title=f"Histórico completo de regras FlowSpec/RTBH ({len(rules)})")
     table.add_column("ID")
     table.add_column("Criada em")
+    table.add_column("App")
     table.add_column("Origem")
     table.add_column("Destino")
     table.add_column("Ação")
@@ -293,7 +294,8 @@ def _cmd_rules_history(args: argparse.Namespace) -> None:
     for row in rules:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created_at"]))
         status = "[green]ativa[/green]" if row["active"] else "[dim]expirada/removida[/dim]"
-        table.add_row(str(row["id"]), when, row.get("src_prefix") or "-", row.get("dst_prefix") or "-",
+        app = "ClientGuard" if row.get("origin") == "clientguard" else "FlowGuard"
+        table.add_row(str(row["id"]), when, app, row.get("src_prefix") or "-", row.get("dst_prefix") or "-",
                       row["action"], row.get("label") or "-", status)
     if not rules:
         console.print("[yellow]Nenhuma regra FlowSpec/RTBH foi criada ainda.[/yellow]")

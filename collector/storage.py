@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS flowspec_rules (
   pkt_len     TEXT,
   action      TEXT NOT NULL,
   active      INTEGER DEFAULT 1,
-  label       TEXT
+  label       TEXT,
+  origin      TEXT NOT NULL DEFAULT 'flowguard'
 );
 
 CREATE TABLE IF NOT EXISTS prefix_baseline (
@@ -101,6 +102,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     attack_cols = {row["name"] for row in conn.execute("PRAGMA table_info(attacks)")}
     if "target_host" not in attack_cols:
         conn.execute("ALTER TABLE attacks ADD COLUMN target_host TEXT")
+        conn.commit()
+    flowspec_cols = {row["name"] for row in conn.execute("PRAGMA table_info(flowspec_rules)")}
+    if "origin" not in flowspec_cols:
+        # 'origin' distingue quem pediu a regra (aba Regras unificada do portal,
+        # separando FlowGuard de ClientGuard) — regras antigas não tinham essa
+        # informação estruturada, só um label livre; melhor esforço: qualquer regra
+        # cujo label já mencione "ClientGuard" (só o bloqueio manual via proxy
+        # `_cmd_block_add` do ClientGuard gera esse texto) é reclassificada.
+        conn.execute("ALTER TABLE flowspec_rules ADD COLUMN origin TEXT NOT NULL DEFAULT 'flowguard'")
+        conn.execute("UPDATE flowspec_rules SET origin = 'clientguard' WHERE label LIKE '%ClientGuard%'")
         conn.commit()
 
 
@@ -269,11 +280,12 @@ def insert_flowspec_rule(conn: sqlite3.Connection, rule: dict) -> int:
     cur = conn.execute(
         """INSERT INTO flowspec_rules
            (created_at, expires_at, attack_id, dst_prefix, src_prefix, protocol,
-            dst_port, src_port, tcp_flags, pkt_len, action, label)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            dst_port, src_port, tcp_flags, pkt_len, action, label, origin)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (rule["created_at"], rule["expires_at"], rule.get("attack_id"), rule.get("dst_prefix"),
          rule.get("src_prefix"), rule.get("protocol"), rule.get("dst_port"), rule.get("src_port"),
-         rule.get("tcp_flags"), rule.get("pkt_len"), rule["action"], rule.get("label", "")),
+         rule.get("tcp_flags"), rule.get("pkt_len"), rule["action"], rule.get("label", ""),
+         rule.get("origin", "flowguard")),
     )
     conn.commit()
     return cur.lastrowid

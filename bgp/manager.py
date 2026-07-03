@@ -63,7 +63,8 @@ class BgpManager:
             return f"limite de regras FlowSpec/RTBH atingido ({max_rules}) — remova regras antigas antes de adicionar novas"
         return None
 
-    async def ban(self, target: str, attack_id: int | None = None, ttl_s: int | None = None) -> dict:
+    async def ban(self, target: str, attack_id: int | None = None, ttl_s: int | None = None,
+                  origin: str = "flowguard") -> dict:
         try:
             prefix = str(ipaddress.ip_network(target, strict=False))
         except ValueError:
@@ -90,7 +91,7 @@ class BgpManager:
         ttl_s = ttl_s or self._mitigation_cfg().get("default_ttl_s", 3600)
         rule_id = await self.daemon.run_db(storage.insert_flowspec_rule, self.daemon.conn, {
             "created_at": now, "expires_at": now + ttl_s, "attack_id": attack_id,
-            "dst_prefix": prefix, "action": "rtbh", "label": f"ban {prefix}",
+            "dst_prefix": prefix, "action": "rtbh", "label": f"ban {prefix}", "origin": origin,
         })
         LOG.warning("RTBH anunciado: %s (regra id=%s, ttl=%ds)", prefix, rule_id, ttl_s)
         return {"ok": True, "rule_id": rule_id}
@@ -107,7 +108,8 @@ class BgpManager:
             LOG.info("RTBH retirado: %s", prefix)
         return resp
 
-    async def flowspec_add(self, rule: dict, attack_id: int | None = None, ttl_s: int | None = None) -> dict:
+    async def flowspec_add(self, rule: dict, attack_id: int | None = None, ttl_s: int | None = None,
+                            origin: str = "flowguard") -> dict:
         budget_error = await self._check_rule_budget()
         if budget_error:
             return {"ok": False, "error": budget_error}
@@ -124,7 +126,7 @@ class BgpManager:
             "protocol": rule.get("protocol"), "dst_port": rule.get("dst_port"),
             "src_port": rule.get("src_port"), "tcp_flags": rule.get("tcp_flags"),
             "pkt_len": rule.get("pkt_len"), "action": rule["action"],
-            "label": rule.get("label", ""),
+            "label": rule.get("label", ""), "origin": origin,
         }
         rule_id = await self.daemon.run_db(storage.insert_flowspec_rule, self.daemon.conn, row)
         LOG.warning("FlowSpec anunciado: %s (regra id=%s, ttl=%ds)", rule, rule_id, ttl_s)
