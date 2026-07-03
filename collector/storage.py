@@ -309,11 +309,6 @@ def deactivate_flowspec_rules_by_prefix(conn: sqlite3.Connection, prefix: str, a
     conn.commit()
 
 
-def deactivate_all_flowspec_rules(conn: sqlite3.Connection) -> None:
-    conn.execute("UPDATE flowspec_rules SET active = 0 WHERE active = 1")
-    conn.commit()
-
-
 def list_expired_flowspec_rules(conn: sqlite3.Connection, now: int) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM flowspec_rules WHERE active = 1 AND expires_at <= ?", (now,)

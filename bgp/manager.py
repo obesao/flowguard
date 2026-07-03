@@ -158,19 +158,32 @@ class BgpManager:
             else:
                 LOG.error("falha ao retirar regra expirada id=%s: %s", row["id"], resp.get("error"))
 
-    async def withdraw_all(self) -> None:
-        """Retira todas as regras ativas — chamado no shutdown gracioso do daemon."""
+    async def withdraw_all(self) -> dict:
+        """Retira todas as regras ativas — usado no shutdown gracioso do daemon e pelo
+        botão "Apagar todas as regras" do portal (cmd flowspec_del_all). Desativa no
+        banco só as que confirmaram a retirada de verdade — uma falha de withdraw não
+        pode apagar o rastro local de uma regra que continua anunciada no roteador
+        (mesma classe de bug encontrada e corrigida no ClientGuard: status local
+        dessincronizado do estado real da regra na borda)."""
         try:
             rows = await self.daemon.run_read_db(storage.list_flowspec_rules, active_only=True)
         except Exception:
-            LOG.exception("falha ao listar regras ativas para retirada no shutdown")
-            return
+            LOG.exception("falha ao listar regras ativas para retirada")
+            return {"ok": False, "error": "falha ao listar regras ativas"}
+        removed, failed = 0, 0
         for row in rows:
             kind = "rtbh" if row["action"] == "rtbh" else "flowspec"
             try:
-                await self._send({"action": "withdraw", "kind": kind, "rule": dict(row)})
+                resp = await self._send({"action": "withdraw", "kind": kind, "rule": dict(row)})
             except Exception:
-                LOG.exception("falha ao retirar regra id=%s no shutdown", row["id"])
-        if rows:
-            await self.daemon.run_db(storage.deactivate_all_flowspec_rules, self.daemon.conn)
-            LOG.info("%d regra(s) FlowSpec/RTBH retirada(s) no shutdown", len(rows))
+                LOG.exception("falha ao retirar regra id=%s", row["id"])
+                resp = {"ok": False}
+            if resp.get("ok"):
+                await self.daemon.run_db(storage.deactivate_flowspec_rule, self.daemon.conn, row["id"])
+                removed += 1
+            else:
+                failed += 1
+                LOG.error("falha ao retirar regra id=%s: %s", row["id"], resp.get("error"))
+        if removed:
+            LOG.info("%d regra(s) FlowSpec/RTBH retirada(s)", removed)
+        return {"ok": failed == 0, "removed": removed, "failed": failed}

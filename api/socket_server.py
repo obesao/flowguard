@@ -217,6 +217,9 @@ class SocketServer:
             return {"ok": False, "error": "rule_id inválido"}
         return await self.daemon.bgp_manager.flowspec_del(rule_id)
 
+    async def _cmd_flowspec_del_all(self, request: dict) -> dict:
+        return await self.daemon.bgp_manager.withdraw_all()
+
     async def _cmd_dismiss_attack(self, request: dict) -> dict:
         attack_id = request.get("attack_id")
         if not attack_id:
