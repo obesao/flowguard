@@ -114,9 +114,18 @@ def _run_device(device: dict, timeout: float) -> dict:
         if device.get("enable_mode"):
             conn.enable()
         outputs = []
-        for cmd in commands:
-            out = conn.send_command(cmd, read_timeout=timeout, strip_prompt=False, strip_command=False)
-            outputs.append(f"$ {cmd}\n{out}")
+        if commands and commands[0].strip().lower() == "system-view":
+            # entra em system-view: o prompt muda de "<host>" (modo usuário) pra
+            # "[host]" (config) — send_command() por linha espera sempre o prompt
+            # original e trava até o timeout. send_config_set() entra/sai do modo
+            # de config sozinho e reconhece os dois formatos de prompt.
+            cfg_commands = [c for c in commands[1:] if c.strip() and c.strip() != "#"]
+            out = conn.send_config_set(cfg_commands, read_timeout=timeout)
+            outputs.append(f"$ system-view\n{out}")
+        else:
+            for cmd in commands:
+                out = conn.send_command(cmd, read_timeout=timeout, strip_prompt=False, strip_command=False)
+                outputs.append(f"$ {cmd}\n{out}")
         return {
             "device": name, "ok": True, "output": "\n\n".join(outputs),
             "elapsed_s": round(time.monotonic() - t0, 1),
