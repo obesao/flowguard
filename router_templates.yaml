@@ -12,7 +12,16 @@
 # Tipos de campo suportados: ipv4, ipv4_cidr (gera automaticamente
 # {campo}_network, {campo}_mask e {campo}_wildcard), interface_name,
 # text_safe, enum (com "options" e opcionalmente "command_map" -> gera
-# {campo}_cmd), int_range (com "min"/"max").
+# {campo}_cmd, e "undo_command_map" -> gera {campo}_undo_cmd, pro caso — como
+# up/down de sessão BGP — em que a reversão de cada opção é simplesmente a
+# outra opção, sem precisar capturar estado anterior), int_range (com
+# "min"/"max").
+#
+# bgp_peer_toggle/bgp_prefix_advertise usam "as_number" (AS local, não o do
+# peer) e "peer_ip"/"prefix" que o portal preenche a partir da descoberta real
+# da config (botão "Ler configuração atual (BGP)", ver routercfg/discovery.py)
+# — mas o backend valida esses campos exatamente como qualquer outro, não
+# confia cegamente no que a descoberta devolveu.
 #
 # Sintaxe VRP abaixo é a típica documentada pela Huawei pra essa família de
 # equipamento — validar contra a versão de software real do NE8000 antes de
@@ -149,4 +158,88 @@ templates:
       - "interface {interface}"
       - "undo description"
       - "undo shutdown"
+      - "quit"
+
+  - id: bgp_peer_toggle
+    label: "Subir/derrubar sessão BGP com uma operadora"
+    category: bgp
+    description: >
+      Suspende ou reativa a sessão BGP com um peer específico via "peer
+      ignore" (não remove a configuração do peer, só para de tentar
+      estabelecer/manter a sessão TCP) — pensado pra manutenção com uma
+      operadora específica sem mexer nas outras. Use "Ler configuração atual
+      (BGP)" no portal pra escolher o peer certo em vez de digitar o IP.
+    device_name: "NE8000 borda"
+    fields:
+      - name: as_number
+        label: "AS local"
+        type: int_range
+        min: 1
+        max: 4294967295
+        required: true
+      - name: peer_ip
+        label: "IP do peer (operadora)"
+        type: ipv4
+        required: true
+      - name: action
+        label: "Ação"
+        type: enum
+        options: ["up", "down"]
+        required: true
+        command_map:
+          up: "undo peer {peer_ip} ignore"
+          down: "peer {peer_ip} ignore"
+        undo_command_map:
+          up: "peer {peer_ip} ignore"
+          down: "undo peer {peer_ip} ignore"
+    commands:
+      - "bgp {as_number}"
+      - "{action_cmd}"
+      - "quit"
+    undo_commands:
+      - "bgp {as_number}"
+      - "{action_undo_cmd}"
+      - "quit"
+
+  - id: bgp_prefix_advertise
+    label: "Anunciar/remover prefixo da lista de IPs advertidos (BGP)"
+    category: bgp
+    description: >
+      Adiciona ou remove um "network" da lista de prefixos anunciados via BGP
+      — afeta o anúncio pra TODOS os peers (não é filtro por operadora
+      específica). Use "Ler configuração atual (BGP)" no portal pra escolher
+      um prefixo já anunciado em vez de digitar na mão. Atenção: se o
+      "network" original tinha uma route-policy associada (atributos
+      customizados), o comando de reversão volta a anunciar o prefixo sem
+      essa route-policy — confira depois de reverter.
+    device_name: "NE8000 borda"
+    fields:
+      - name: as_number
+        label: "AS local"
+        type: int_range
+        min: 1
+        max: 4294967295
+        required: true
+      - name: prefix
+        label: "Prefixo (CIDR)"
+        type: ipv4_cidr
+        required: true
+      - name: action
+        label: "Ação"
+        type: enum
+        options: ["announce", "withdraw"]
+        required: true
+        command_map:
+          announce: "network {prefix_network} {prefix_mask}"
+          withdraw: "undo network {prefix_network} {prefix_mask}"
+        undo_command_map:
+          announce: "undo network {prefix_network} {prefix_mask}"
+          withdraw: "network {prefix_network} {prefix_mask}"
+    commands:
+      - "bgp {as_number}"
+      - "{action_cmd}"
+      - "quit"
+    undo_commands:
+      - "bgp {as_number}"
+      - "{action_undo_cmd}"
       - "quit"

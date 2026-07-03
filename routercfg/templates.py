@@ -144,8 +144,20 @@ def _resolve_fields(template: dict, values: dict) -> dict:
             resolved[f"{name}_network"] = network
             resolved[f"{name}_mask"] = _cidr_to_mask(prefix_len)
             resolved[f"{name}_wildcard"] = _cidr_to_wildcard(prefix_len)
-        if field["type"] == "enum" and field.get("command_map") and val in field["command_map"]:
-            resolved[f"{name}_cmd"] = field["command_map"][val]
+
+    # segunda passada: command_map/undo_command_map podem referenciar campos
+    # de OUTROS fields (ex: "peer {peer_ip} ignore" dentro do map do campo
+    # "action") — precisa do dict `resolved` já completo, não dá pra formatar
+    # na mesma passada em que ele ainda está sendo construído.
+    for field in template.get("fields", []):
+        name = field["name"]
+        val = resolved.get(name)
+        if field["type"] != "enum":
+            continue
+        if field.get("command_map") and val in field["command_map"]:
+            resolved[f"{name}_cmd"] = field["command_map"][val].format(**resolved)
+        if field.get("undo_command_map") and val in field["undo_command_map"]:
+            resolved[f"{name}_undo_cmd"] = field["undo_command_map"][val].format(**resolved)
     return resolved
 
 

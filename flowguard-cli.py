@@ -589,6 +589,35 @@ def cmd_routercfg_revert(args: argparse.Namespace, sock_path: str) -> None:
         raise SystemExit(1)
 
 
+def cmd_routercfg_discover(args: argparse.Namespace, sock_path: str) -> None:
+    from routercfg.discovery import discover_bgp
+    from routercfg.templates import ValidationError
+    try:
+        result = discover_bgp()
+    except ValidationError as exc:
+        console.print(f"[red]Erro:[/red] {exc}")
+        raise SystemExit(1)
+    except Exception as exc:
+        console.print(f"[red]Falha ao consultar o roteador via SSH:[/red] {exc}")
+        raise SystemExit(1)
+    console.print(f"AS local: [bold]{result['local_as'] or '?'}[/bold]")
+    peers_table = Table(title="Peers BGP")
+    peers_table.add_column("IP")
+    peers_table.add_column("AS remoto")
+    peers_table.add_column("Grupo")
+    peers_table.add_column("Descrição")
+    peers_table.add_column("Estado")
+    for p in result["peers"]:
+        estado = "[green]up[/green]" if p["state"] == "up" else "[red]down (ignore)[/red]"
+        peers_table.add_row(p["peer_ip"], p["remote_as"] or "-", p["group"] or "-", p["description"] or "-", estado)
+    console.print(peers_table)
+    nets_table = Table(title="Prefixos anunciados (network statements)")
+    nets_table.add_column("CIDR")
+    for n in result["networks"]:
+        nets_table.add_row(n["cidr"])
+    console.print(nets_table)
+
+
 def cmd_routercfg_history(args: argparse.Namespace, sock_path: str) -> None:
     from routercfg.apply import list_history
     jobs = list_history(limit=args.limit)
@@ -766,6 +795,9 @@ def main() -> None:
     p_rc_history = routercfg_sub.add_parser("history")
     p_rc_history.add_argument("--limit", type=int, default=20)
     p_rc_history.set_defaults(func=cmd_routercfg_history)
+
+    p_rc_discover = routercfg_sub.add_parser("discover", help="lê a config BGP real do roteador (peers, AS local, prefixos anunciados)")
+    p_rc_discover.set_defaults(func=cmd_routercfg_discover)
 
     sub.add_parser("reload").set_defaults(func=cmd_reload)
     sub.add_parser("stop").set_defaults(func=cmd_stop)

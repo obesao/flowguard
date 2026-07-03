@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.11.0**
+**Versão atual: v1.12.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -41,6 +41,14 @@ fixo e por anomalia de baseline (EWMA), e reage via BGP FlowSpec/RTBH
     sozinho se o operador não confirmar a mudança dentro de alguns minutos.
     Consumido pelo portal (`flowguard-routercfg.sh`) e por
     `flowguard-cli routercfg`.
+12. **Descoberta de configuração BGP real** (`routercfg/discovery.py`) — lê
+    `display current-configuration configuration bgp` via SSH e extrai AS
+    local, peers (IP, AS remoto, descrição, estado up/down) e prefixos
+    anunciados (`network` statements). Alimenta dois templates novos: subir/
+    derrubar sessão BGP com uma operadora específica (`peer ... ignore`/`undo
+    ... ignore`) e anunciar/remover um prefixo da lista de IPs advertidos
+    (`network`/`undo network`) — o operador escolhe peer/prefixo numa lista
+    real em vez de digitar IP na mão.
 
 **Pendente:** `exabgp.service` ainda não está ativo em produção — aguardando
 confirmação após aplicação da config BGP no roteador de borda real. Fase 5 (IA)
@@ -65,6 +73,41 @@ sem pipeline automático de eventos ainda, só análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.12.0 — 2026-07-02 — Descoberta de BGP real: subir/derrubar operadora e anunciar/remover prefixo
+- Novo `routercfg/discovery.py`: lê `display current-configuration
+  configuration bgp` via SSH (mesmas credenciais de `warmode.yaml`) e extrai
+  AS local, peers (IP, AS remoto, descrição, grupo, estado up/down conforme
+  presença de `peer ... ignore`) e a lista de `network` statements anunciados
+  — parsing por regex, só leitura, nunca aplica nada.
+- Dois templates novos em `router_templates.yaml`:
+  - `bgp_peer_toggle` — suspende/reativa a sessão com um peer específico via
+    `peer {ip} ignore` / `undo peer {ip} ignore`, pensado pra manutenção com
+    uma operadora sem mexer nas outras.
+  - `bgp_prefix_advertise` — adiciona/remove um prefixo da lista de IPs
+    advertidos via `network`/`undo network` (afeta todos os peers, não é
+    filtro por operadora).
+  Ambos com reversão exatamente simétrica (down↔up, announce↔withdraw) via
+  `undo_command_map` (novo mecanismo genérico em `routercfg/templates.py` —
+  mais confiável que os `undo_commands` fixos dos templates anteriores, já
+  que aqui a reversão de cada opção é sempre a outra opção, sem precisar
+  capturar estado anterior).
+- **Bug real encontrado e corrigido nessa mesma implementação:** o
+  `command_map`/`undo_command_map` guardava a string do comando já com
+  placeholders (ex: `"peer {peer_ip} ignore"`), mas só o comando do
+  *template* passava por `.format()` — o valor que substituía `{action_cmd}`
+  entrava literal, com o placeholder `{peer_ip}` nunca resolvido. Corrigido
+  com uma segunda passada em `_resolve_fields()` que formata os valores de
+  `command_map`/`undo_command_map` depois que todos os campos (incluindo os
+  derivados de `ipv4_cidr`) já foram resolvidos — não dá pra fazer isso numa
+  passada só porque a ordem dos campos no YAML não é garantida.
+- `flowguard-cli routercfg discover` (tabela de peers + prefixos) e
+  `flowguard-routercfg.sh` (`action: "discover"`, novo) expõem a descoberta
+  pro CLI e pro portal.
+- 11 testes novos (`test_routercfg_discovery.py`, mais casos em
+  `test_routercfg_templates.py`) — total 34 testes na suíte do FlowGuard.
+  Mesma limitação já registrada: validado com SSH mockado, não contra
+  hardware real (sem credenciais neste ambiente).
 
 ### v1.11.0 — 2026-07-02 — Configuração do roteador de borda via templates validados
 - Novo módulo `routercfg/`: edição de config do roteador de borda por SSH

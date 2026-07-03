@@ -97,3 +97,31 @@ def test_text_safe_rejects_shell_metacharacters():
     with pytest.raises(ValidationError):
         validate_field(field, "ok`whoami`")
     assert validate_field(field, "link cliente X") == "link cliente X"
+
+
+def test_bgp_peer_toggle_down_and_undo_are_symmetric_opposites():
+    built = build_commands("bgp_peer_toggle", {"as_number": "65000", "peer_ip": "200.201.202.1", "action": "down"})
+    assert built["commands"] == ["bgp 65000", "peer 200.201.202.1 ignore", "quit"]
+    assert built["undo_commands"] == ["bgp 65000", "undo peer 200.201.202.1 ignore", "quit"]
+
+
+def test_bgp_peer_toggle_up_and_undo_are_symmetric_opposites():
+    built = build_commands("bgp_peer_toggle", {"as_number": "65000", "peer_ip": "200.201.202.1", "action": "up"})
+    assert built["commands"] == ["bgp 65000", "undo peer 200.201.202.1 ignore", "quit"]
+    assert built["undo_commands"] == ["bgp 65000", "peer 200.201.202.1 ignore", "quit"]
+
+
+def test_bgp_prefix_advertise_withdraw_expands_cidr_and_has_symmetric_undo():
+    built = build_commands("bgp_prefix_advertise", {"as_number": "65000", "prefix": "203.0.113.0/24", "action": "withdraw"})
+    assert built["commands"] == ["bgp 65000", "undo network 203.0.113.0 255.255.255.0", "quit"]
+    assert built["undo_commands"] == ["bgp 65000", "network 203.0.113.0 255.255.255.0", "quit"]
+
+
+def test_bgp_templates_reject_injection_in_peer_ip():
+    with pytest.raises(ValidationError):
+        build_commands("bgp_peer_toggle", {"as_number": "65000", "peer_ip": "200.201.202.1; reboot", "action": "down"})
+
+
+def test_bgp_as_number_out_of_range_rejected():
+    with pytest.raises(ValidationError):
+        build_commands("bgp_peer_toggle", {"as_number": "99999999999", "peer_ip": "200.201.202.1", "action": "down"})
