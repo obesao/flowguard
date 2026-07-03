@@ -6,7 +6,19 @@
 # root-only), não é exposto por HTTP em lugar nenhum, nunca vai pro git.
 #
 # device_type usa os drivers do Netmiko (https://github.com/ktbyers/netmiko) —
-# os mais relevantes aqui: huawei_vrp (NE8000/VRP) e a10 (A10 Thunder/ACOS).
+# os mais relevantes aqui: huawei_vrpv8 (NE8000 de verdade — modelo de config
+# candidata com "commit", ver nota abaixo) e a10 (A10 Thunder/ACOS).
+#
+# ATENÇÃO — achado real (2026-07-02): "huawei_vrp" (sem "v8") NÃO funciona
+# pra aplicar config (send_config_set) num NE8000 de carrier real. Esse
+# equipamento usa o modelo de configuração candidata (prompt some com "~"/"*"
+# quando há mudança não commitada) — ao sair do modo de configuração, o VRP
+# pergunta interativamente "Uncommitted configurations found, commit them
+# before exiting? [Y/N/C]", e o driver "huawei_vrp" não sabe responder isso,
+# travando até estourar o timeout ("Pattern not detected: '>' in output").
+# "huawei_vrpv8" já sabe fazer o commit sozinho antes de sair. Comandos de
+# LEITURA (display ...) funcionam com qualquer um dos dois — só send_config_set
+# (aplicar mudança de verdade) precisa do driver certo.
 # `enable_mode: true` faz o Netmiko chamar `enable` com enable_secret antes dos
 # comandos, se o equipamento precisar (normalmente não precisa em VRP/ACOS).
 #
@@ -15,10 +27,10 @@
 # ataque acontecendo agora).
 
 devices:
-  - name: "NE8000 borda"
+  - name: "NE8000BGP"
     host: 10.77.10.1
     port: 22
-    device_type: huawei_vrp
+    device_type: huawei_vrpv8
     username: admin
     password: "TROQUE_AQUI"
     enable_mode: false

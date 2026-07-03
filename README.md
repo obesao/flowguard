@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.16.0**
+**Versão atual: v1.17.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,30 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.17.0 — 2026-07-02 — Corrige driver Netmiko: huawei_vrp não aplica config em NE8000 de carrier real
+- **Bug real, achado e corrigido testando pela primeira vez uma aplicação de
+  verdade (não só leitura) contra o NE8000 de produção**: `device_type:
+  huawei_vrp` em `warmode.yaml` conecta e lê (`display ...`) sem problema,
+  mas trava em qualquer `send_config_set` (aplicar mudança de config) — esse
+  equipamento usa o modelo de configuração candidata do VRP (prompt some com
+  `~`/`*` enquanto há mudança não commitada); ao sair do modo de
+  configuração, o VRP pergunta interativamente `Uncommitted configurations
+  found, commit them before exiting? [Y/N/C]`, e o driver `huawei_vrp` não
+  sabe responder isso — trava até estourar o timeout
+  (`Pattern not detected: '>' in output`). Corrigido trocando pra
+  `device_type: huawei_vrpv8` (mesma família de driver Netmiko, mas com
+  suporte ao fluxo de commit) — esse driver já manda `commit` sozinho antes
+  de sair. `warmode.yaml.example` atualizado com essa observação.
+- Validado ponta a ponta contra o equipamento real: aplicar uma regra de ACL
+  de teste (prefixo RFC 5737, sem tráfego real) e reverter, tanto via
+  `routercfg.apply` quanto via `clientguard/edge_mitigation.py` (mesmo
+  equipamento, credenciais compartilhadas) — os dois caminhos de código
+  agora aplicam config de verdade no NE8000BGP.
+- Esse bug afetava IGUALMENTE o módulo `routercfg` (templates do portal) e a
+  mitigação de borda do ClientGuard — nenhum dos dois nunca tinha conseguido
+  aplicar uma mudança de config real antes desta correção, mesmo com
+  credenciais certas, por causa do driver errado.
 
 ### v1.16.0 — 2026-07-02 — `origin` em flowspec_rules: base pra aba Regras unificada do portal
 Usuário pediu que a aba "Regras" do portal mostre TODA interação com a borda
