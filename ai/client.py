@@ -158,3 +158,52 @@ class AIClient:
         except Exception:
             LOG.exception("falha ao chamar IA (model_report) para relatório horário")
             return None
+
+    async def war_mode_summary(self, elapsed_s: int, stats: dict, attacks: list[dict]) -> str | None:
+        """Atualização periódica (WhatsApp) enquanto o Modo Guerra está ativo —
+        diferente de hourly_summary: não depende de ai.hourly_report (é outro
+        gatilho, o botão único do Modo Guerra), e inclui tráfego agregado atual
+        além da lista de ataques, pra dar um panorama mais completo do incidente."""
+        if not self.enabled:
+            return None
+        if not self._limiter.allow():
+            LOG.warning("rate limit de IA (%s rpm) atingido — pulando resumo do Modo Guerra", self._limiter.rpm)
+            return None
+
+        hours, rem = divmod(max(elapsed_s, 0), 3600)
+        minutes = rem // 60
+
+        if attacks:
+            lines = []
+            for a in attacks[:10]:
+                lines.append(
+                    f"- {a['attack_type']} em {a['dst_prefix']} ({a.get('customer') or '?'}), "
+                    f"severidade {a['severity']}, pico {(a.get('bps_peak') or 0) / 1e6:.1f} Mbps / "
+                    f"{(a.get('pps_peak') or 0):,} pps"
+                )
+            attacks_block = "\n".join(lines)
+        else:
+            attacks_block = "nenhum ataque ativo no momento"
+
+        prompt = (
+            f"Modo Guerra (postura de emergência anti-DDoS de um ISP) está ativo há {hours}h{minutes:02d}min.\n\n"
+            f"Tráfego agregado atual: {stats.get('bps', 0) / 1e6:.1f} Mbps, {stats.get('pps', 0):,} pps, "
+            f"{stats.get('flows', 0)} flows/s.\n"
+            f"Ataques ativos: {stats.get('active_attacks', 0)}. Regras FlowSpec/RTBH ativas: {stats.get('active_rules', 0)}.\n\n"
+            f"Ataques monitorados:\n{attacks_block}\n\n"
+            "Em português, escreva uma atualização de status de até 6 frases pra um operador de "
+            "rede gerenciando este incidente: em que fase ele parece estar (escalando, estável, "
+            "arrefecendo), um resumo panorâmico dos prefixos/links sob ataque, os tipos de ataque "
+            "predominantes, e uma recomendação objetiva sobre continuar ou não em Modo Guerra. Não "
+            "invente dados que não foram fornecidos acima. Responda em texto simples (sem "
+            "markdown, sem título, sem listas), só o parágrafo da atualização."
+        )
+        try:
+            resp = await self._client.messages.create(
+                model=self.model_report, max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return resp.content[0].text.strip()
+        except Exception:
+            LOG.exception("falha ao chamar IA (model_report) para resumo do Modo Guerra")
+            return None

@@ -31,6 +31,7 @@ LOG = logging.getLogger("flowguard.warmode")
 DEFAULT_CONFIG_PATH = "/root/flowguard/warmode.yaml"
 FLOWGUARD_CONFIG_PATH = "/root/flowguard/config.yaml"
 AUDIT_LOG_PATH = "/var/log/flowguard-warmode-audit.jsonl"
+STATE_PATH = "/root/flowguard/warmode/state.json"
 
 
 def load_config(path: str = DEFAULT_CONFIG_PATH) -> dict:
@@ -38,6 +39,29 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> dict:
     if not p.exists():
         return {"devices": []}
     return yaml.safe_load(p.read_text(encoding="utf-8")) or {"devices": []}
+
+
+def get_state(path: str = STATE_PATH) -> dict:
+    """Estado atual do Modo Guerra (ligado/desligado + desde quando) — lido pelo
+    portal (botão único/timer) e pelo report.py (aviso periódico no WhatsApp).
+    Puramente declarativo: reflete a intenção do operador (clicou pra ligar/
+    desligar), não se os comandos SSH tiveram sucesso em todos os equipamentos —
+    isso já é reportado separadamente (audit log / resultado no modal)."""
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"active": False, "started_at": None}
+
+
+def _write_state(active: bool, path: str = STATE_PATH) -> None:
+    if active:
+        current = get_state(path)
+        started_at = current.get("started_at") if current.get("active") else int(time.time())
+        state = {"active": True, "started_at": started_at}
+    else:
+        state = {"active": False, "started_at": None}
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(state), encoding="utf-8")
 
 
 def load_devices_masked(config_path: str = DEFAULT_CONFIG_PATH) -> list[dict]:
@@ -216,6 +240,7 @@ def _run_war_mode(mode: str, config_path: str, timeout: float, trigger: str) -> 
             results.append(fut.result())
     LOG.warning("MODO GUERRA %s (%s): %s", mode, trigger,
                 [{"device": r["device"], "ok": r["ok"]} for r in results])
+    _write_state(mode == "apply")
     _audit(trigger, mode, results)
     _notify_whatsapp(trigger, mode, results)
     return results

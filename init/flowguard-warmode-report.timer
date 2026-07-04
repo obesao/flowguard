@@ -1,0 +1,11 @@
+[Unit]
+Description=Dispara flowguard-warmode-report.service a cada 30min (no-op se o Modo Guerra estiver desligado)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+Unit=flowguard-warmode-report.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

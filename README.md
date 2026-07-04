@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.20.0**
+**Versão atual: v1.21.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,45 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.21.0 — 2026-07-04 — Modo Guerra: botão único (liga/desliga) + aviso periódico por WhatsApp com IA
+Pedido do usuário: unificar os botões de ligar/desligar o Modo Guerra num só
+(toggle) e, enquanto ativo, mandar atualizações periódicas pro WhatsApp com o
+tempo decorrido e um resumo gerado por IA. `warmode/executor.py` ganhou um
+estado persistido (`warmode/state.json`, fora do git — `{"active", "started_at"}`)
+gravado toda vez que `run_war_mode`/`run_war_mode_revert` roda (independente de
+sucesso por equipamento — reflete a intenção do operador, não o resultado SSH
+por dispositivo, que já é reportado separadamente). Não substitui nem afrouxa a
+etapa de confirmação (senha + lista de equipamentos + clique explícito) já
+existente — só o gatilho (1 botão em vez de 2) mudou.
+
+Novo `warmode/report.py`, rodado por um timer systemd próprio
+(`init/flowguard-warmode-report.{service,timer}`, `OnUnitActiveSec=30min`,
+instalado e habilitado nesta sessão) — deliberadamente um processo separado do
+`flowguard.service`, mesma filosofia do resto do warmode (continua funcionando
+mesmo com o daemon sob estresse, que é justo quando um DDoS real está
+rolando). A cada disparo do timer: lê o estado do Modo Guerra direto do
+arquivo (sem tocar o socket do daemon); se desligado, não faz nada; se ligado,
+lê `flow_aggs`/`attacks` direto do SQLite (mesmo padrão de leitura ad-hoc já
+usado por `cgi-bin/flowguard-ai.sh`), monta um prompt com tráfego atual,
+ataques ativos e tempo decorrido, e pede um resumo panorâmico por IA — em que
+fase o incidente está, quais links/prefixos estão sob ataque, tipos de
+ataque predominantes, recomendação objetiva. Novo método `AIClient.war_mode_summary()`
+em `ai/client.py` (mesmo padrão de `hourly_summary()`, mas com gatilho próprio,
+não depende de `ai.hourly_report`). Se a IA falhar/estiver desabilitada, cai
+num fallback só com os números (tráfego, contagem de ataques/regras) — nunca
+deixa o operador sem nenhuma atualização só por causa da IA. Respeita
+`alerts.whatsapp` do `config.yaml` (mesmo gate já usado pela notificação
+imediata de ativação/reversão).
+
+Validado ponta a ponta sem tocar em nenhum equipamento real: estado
+simulado diretamente no arquivo (nunca via SSH), `run_report()` chamado
+manualmente com `notifier.send_whatsapp` substituído por um mock — mensagem
+gerada corretamente (elapsed time + resumo por IA real, usando dados reais de
+produção). Timer testado via `systemctl start` (no-op confirmado com o Modo
+Guerra desligado) e `systemctl list-timers` (próximo disparo em 30min). Ver
+changelog do `flowguard-portal` (v1.26.0) pro lado do botão único/timer no
+portal.
 
 ### v1.20.0 — 2026-07-04 — Mitigação automática + verificação de regras via SSH e 2º peer BGP na borda
 - **Mitigação automática** (pedido do usuário): `mitigation_profiles.yaml` ganhou
