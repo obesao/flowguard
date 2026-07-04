@@ -176,12 +176,16 @@ def _fmt_mitigation_action(action: str | None) -> str:
     return "discard"
 
 
-def _fmt_attack_mitigation_cell(mitigation: dict | None) -> str:
+def _fmt_attack_mitigation_cell(mitigation: dict | None, row_open: bool = False) -> str:
     if not mitigation:
         return "[dim]sem mitigação[/dim]"
     label = _fmt_mitigation_action(mitigation.get("action"))
     if mitigation.get("active"):
         return f"[green]🛡 ativa ({label})[/green]"
+    # ataque ainda ativo (ts_end NULL) com mitigação já encerrada = cliente SEM
+    # proteção agora, não é só histórico — pedido do usuário pra deixar isso claro
+    if row_open:
+        return f"[red]⚠ sem proteção ({label})[/red]"
     return f"[dim]encerrada ({label})[/dim]"
 
 
@@ -204,7 +208,7 @@ def cmd_attacks(args: argparse.Namespace, sock_path: str) -> None:
     for row in resp["attacks"]:
         table.add_row(
             str(row["id"]), row["dst_prefix"], row["attack_type"], row["severity"],
-            fmt_bps(row["bps_peak"] or 0), _fmt_attack_mitigation_cell(row.get("mitigation")),
+            fmt_bps(row["bps_peak"] or 0), _fmt_attack_mitigation_cell(row.get("mitigation"), not row.get("ts_end")),
             "sim" if row.get("ai_analysis") else "-",
         )
     if not resp["attacks"]:
@@ -227,7 +231,7 @@ def cmd_attack_detail(attack_id: int, sock_path: str) -> None:
         f"{attack['pps_peak'] or 0:,} pps\n"
         f"Status: {'encerrado' if attack['ts_end'] else '[red]ativo[/red]'}"
         f"{'  |  Alvo (host): ' + attack['target_host'] if attack.get('target_host') else ''}\n"
-        f"Mitigação: {_fmt_attack_mitigation_cell(attack.get('mitigation'))}\n"
+        f"Mitigação: {_fmt_attack_mitigation_cell(attack.get('mitigation'), not attack.get('ts_end'))}\n"
         f"Duração: {fmt_duration(summary.get('duration_s', 0))}  |  "
         f"Total: {fmt_bytes(summary.get('total_bytes', 0))}, "
         f"{summary.get('total_packets', 0):,} pacotes, "

@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.25.0**
+**Versão atual: v1.26.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,39 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.26.0 — 2026-07-04 — Ataque não fica "ativo" pra sempre quando a mitigação expira
+Pedido do usuário: um ataque na aba Ataques (portal e CLI) continuava marcado
+como ativo mesmo depois que o tempo/TTL da mitigação já tinha passado.
+
+Investigação encontrou a causa raiz real: o fechamento automático de ataques
+(`DetectionEngine._evaluate`, baseado no tráfego medido cair abaixo do limiar)
+já funcionava — o NetFlow é contado na entrada da interface do roteador, antes
+do RTBH/FlowSpec decidir descartar, então enquanto o atacante mandar tráfego o
+ataque segue "ativo" mesmo com a mitigação bloqueando de verdade. Isso é
+factualmente correto (o atacante não parou), mas não havia nenhum sinal
+diferenciando "ativo e protegido" de "ativo e sem proteção" (mitigação
+expirada/revertida) — que é exatamente o incômodo relatado.
+
+Duas mudanças, sem alterar a arquitetura de detecção:
+- **Rede de segurança**: `attacks` ganha `ts_last_seen`, atualizado a cada
+  ciclo em que o ataque continua confirmado; um novo `close_stale_attacks`
+  (rodando 1x/hora, junto do prune de retenção) fecha sozinho qualquer ataque
+  sem reconfirmação há mais de `detection.attack_stale_close_s` (padrão 6h) —
+  cobre o caso raro em que a engine para de reavaliar a chave (prefixo
+  removido de `protected_prefixes`, reload/restart no meio do ataque) e a
+  linha ficaria "ativa" pra sempre.
+- **Selo de mitigação mais claro**: quando o ataque continua ativo mas a
+  última mitigação já não está mais em vigor, o selo muda de "encerrada"
+  (neutro) para "⚠ sem proteção" (vermelho), tanto no portal quanto no CLI
+  (`flowguard-cli attacks`/`attacks --id`).
+
+Validado ao vivo: reiniciar o daemon (necessário pra carregar o código —
+`withdraw_all()` no shutdown derruba as regras BGP ativas) e observar a
+reconciliação automática do ClientGuard corrigir as mitigações órfãs; o selo
+"⚠ sem proteção" apareceu corretamente nos sinais afetados, sem erro de
+console. 5 testes novos (`tests/test_attack_lifecycle.py`) cobrindo
+`ts_last_seen`/`close_stale_attacks`.
 
 ### v1.25.0 — 2026-07-04 — trigger_type + equipamento em flowspec_rules (base pra etiquetas da aba Regras)
 Pedido do usuário: na aba Regras, sinalizar em cada regra FlowSpec/RTBH como

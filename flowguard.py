@@ -303,12 +303,26 @@ class FlowGuardDaemon:
                     pruned = await self.run_db(storage.prune_old_aggs, self.conn, retention_days)
                     if pruned:
                         LOG.info("retenção: %d agregados antigos removidos", pruned)
+                    await self._close_stale_attacks()
                 # ANALYZE 1x/dia, fora do prune horário — na tabela grande ele custa
                 # caro e as estatísticas do planner não mudam a cada hora
                 if self._cycle_count % (cycles_per_hour * 24) == 0:
                     await self.run_db(storage.analyze, self.conn)
             except Exception:
                 LOG.exception("falha no ciclo de agregação/detecção — pulando este ciclo, coleta continua")
+
+    async def _close_stale_attacks(self) -> None:
+        stale_s = self.config.get("detection", {}).get("attack_stale_close_s", 21600)
+        closed = await self.run_db(storage.close_stale_attacks, self.conn, stale_s)
+        for row in closed:
+            LOG.info(
+                "ataque #%d encerrado por inatividade (rede de segurança): %s em %s, sem reconfirmação há mais de %ds",
+                row["id"], row["attack_type"], row["dst_prefix"], stale_s,
+            )
+            self.fire_and_forget(
+                self.notify_attack_closed(row["id"], row["dst_prefix"], row["attack_type"], row["severity"], row["bps_peak"] or 0),
+                f"ataque #{row['id']} encerrado (inatividade)",
+            )
 
     async def _aggregate_once(self) -> None:
         records = []

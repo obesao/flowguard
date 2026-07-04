@@ -202,7 +202,7 @@ class DetectionEngine:
             first_seen = self._pending.setdefault(key, now)
             if (now - first_seen) >= min_duration:
                 if existing:
-                    to_update.append((existing["id"], bps, pps))
+                    to_update.append((existing["id"], bps, pps, now))
                 else:
                     to_insert.append({
                         "ts_start": now, "dst_prefix": prefix, "customer": entry.get("customer", ""),

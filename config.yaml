@@ -22,6 +22,12 @@ detection:
   scan_ports_per_sec: 50
   scan_hosts_per_sec: 100
   min_attack_duration_s: 10
+  # rede de segurança: fecha sozinho um ataque sem reconfirmação de tráfego há mais
+  # desse tempo (ver collector/storage.py::close_stale_attacks) — cobre o caso raro
+  # em que a engine parou de reavaliar a chave (prefixo removido de
+  # protected_prefixes, reload/restart no meio do ataque) e a linha ficaria "ativa"
+  # pra sempre no portal/CLI mesmo com a mitigação já expirada há muito tempo.
+  attack_stale_close_s: 21600
   baseline_min_duration_s: 120
   window_short_s: 30
   window_long_s: 300

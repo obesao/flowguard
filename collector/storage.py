@@ -37,20 +37,21 @@ CREATE TABLE IF NOT EXISTS flow_aggs (
 );
 
 CREATE TABLE IF NOT EXISTS attacks (
-  id           INTEGER PRIMARY KEY,
-  ts_start     INTEGER NOT NULL,
-  ts_end       INTEGER,
-  dst_prefix   TEXT NOT NULL,
-  customer     TEXT,
-  attack_type  TEXT NOT NULL,
-  severity     TEXT NOT NULL,
-  bps_peak     INTEGER,
-  pps_peak     INTEGER,
-  top_sources  TEXT,
-  mitigated    INTEGER DEFAULT 0,
-  ai_analysis  TEXT,
-  dismissed    INTEGER DEFAULT 0,
-  target_host  TEXT
+  id            INTEGER PRIMARY KEY,
+  ts_start      INTEGER NOT NULL,
+  ts_end        INTEGER,
+  dst_prefix    TEXT NOT NULL,
+  customer      TEXT,
+  attack_type   TEXT NOT NULL,
+  severity      TEXT NOT NULL,
+  bps_peak      INTEGER,
+  pps_peak      INTEGER,
+  top_sources   TEXT,
+  mitigated     INTEGER DEFAULT 0,
+  ai_analysis   TEXT,
+  dismissed     INTEGER DEFAULT 0,
+  target_host   TEXT,
+  ts_last_seen  INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS flowspec_rules (
@@ -104,6 +105,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     attack_cols = {row["name"] for row in conn.execute("PRAGMA table_info(attacks)")}
     if "target_host" not in attack_cols:
         conn.execute("ALTER TABLE attacks ADD COLUMN target_host TEXT")
+        conn.commit()
+    if "ts_last_seen" not in attack_cols:
+        # rastreia o último ciclo em que o tráfego do ataque foi de fato reconfirmado
+        # acima do limiar (ver DetectionEngine._evaluate/apply_attack_changes) — usado
+        # por close_stale_attacks como rede de segurança pra ataques que a engine parou
+        # de reavaliar (prefixo removido de protected_prefixes, reload/restart no meio
+        # do ataque) e que por isso nunca fechariam sozinhos. Linhas antigas não têm
+        # esse dado; melhor esforço, usa ts_end (se já fechado) ou ts_start.
+        conn.execute("ALTER TABLE attacks ADD COLUMN ts_last_seen INTEGER")
+        conn.execute("UPDATE attacks SET ts_last_seen = COALESCE(ts_end, ts_start) WHERE ts_last_seen IS NULL")
         conn.commit()
     flowspec_cols = {row["name"] for row in conn.execute("PRAGMA table_info(flowspec_rules)")}
     if "origin" not in flowspec_cols:
@@ -599,16 +610,16 @@ def apply_attack_changes(conn: sqlite3.Connection, to_insert: list[dict],
     inserted_ids: list[int] = []
     for item in to_insert:
         cur = conn.execute(
-            """INSERT INTO attacks (ts_start, dst_prefix, customer, attack_type, severity, bps_peak, pps_peak)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO attacks (ts_start, dst_prefix, customer, attack_type, severity, bps_peak, pps_peak, ts_last_seen)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (item["ts_start"], item["dst_prefix"], item["customer"], item["attack_type"],
-             item["severity"], item["bps_peak"], item["pps_peak"]),
+             item["severity"], item["bps_peak"], item["pps_peak"], item["ts_start"]),
         )
         inserted_ids.append(cur.lastrowid)
-    for attack_id, bps, pps in to_update:
+    for attack_id, bps, pps, now in to_update:
         conn.execute(
-            "UPDATE attacks SET bps_peak = MAX(bps_peak, ?), pps_peak = MAX(pps_peak, ?) WHERE id = ?",
-            (bps, pps, attack_id),
+            "UPDATE attacks SET bps_peak = MAX(bps_peak, ?), pps_peak = MAX(pps_peak, ?), ts_last_seen = ? WHERE id = ?",
+            (bps, pps, now, attack_id),
         )
     for attack_id, ts_end, dst_prefix, ts_start in to_close:
         # calculado uma vez, no encerramento — evita recalcular pra cada ataque
@@ -619,6 +630,31 @@ def apply_attack_changes(conn: sqlite3.Connection, to_insert: list[dict],
         )
     conn.commit()
     return inserted_ids
+
+
+def close_stale_attacks(conn: sqlite3.Connection, stale_s: int) -> list[dict]:
+    """Rede de segurança: fecha ataques sem reconfirmação de tráfego (ts_last_seen) há
+    mais de stale_s. NÃO é o mecanismo principal de fechamento — esse é o
+    DetectionEngine._evaluate, baseado no tráfego medido cair abaixo do limiar a cada
+    ciclo. Esse aqui só cobre o caso em que a própria reavaliação parou de acontecer
+    (prefixo removido de protected_prefixes, reload/restart do daemon no meio do
+    ataque) — sem isso a linha fica com ts_end NULL (mostrando "ativo" no
+    portal/CLI) para sempre, mesmo que a mitigação associada já tenha expirado há
+    muito tempo. Retorna os ataques fechados (dict completo) pra quem chamar notificar."""
+    cutoff = int(time.time()) - stale_s
+    rows = conn.execute(
+        "SELECT * FROM attacks WHERE ts_end IS NULL AND ts_last_seen < ?", (cutoff,),
+    ).fetchall()
+    closed = []
+    for row in rows:
+        target_host = attack_top_host(conn, row["dst_prefix"], row["ts_start"], row["ts_last_seen"])
+        conn.execute(
+            "UPDATE attacks SET ts_end = ?, target_host = ? WHERE id = ?",
+            (row["ts_last_seen"], target_host, row["id"]),
+        )
+        closed.append({**dict(row), "ts_end": row["ts_last_seen"], "target_host": target_host})
+    conn.commit()
+    return closed
 
 
 def get_baseline(conn: sqlite3.Connection, dst_prefix: str) -> dict | None:
