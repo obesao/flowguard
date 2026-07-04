@@ -95,7 +95,7 @@ class CommandHandler(socketserver.BaseRequestHandler):
             if req.get("action") == "status":
                 response = {"ok": True, "neighbors": get_neighbor_state()}
             else:
-                command = flowspec.build_command(req["action"], req["kind"], req["rule"])
+                command = flowspec.build_command(req["action"], req["kind"], req["rule"], req.get("neighbor"))
                 send_to_exabgp(command)
                 LOG.info("speaker -> exabgp: %s", command)
                 response = {"ok": True}

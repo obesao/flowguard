@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS flowspec_rules (
   action      TEXT NOT NULL,
   active      INTEGER DEFAULT 1,
   label       TEXT,
-  origin      TEXT NOT NULL DEFAULT 'flowguard'
+  origin      TEXT NOT NULL DEFAULT 'flowguard',
+  peer        TEXT NOT NULL DEFAULT 'main'
 );
 
 CREATE TABLE IF NOT EXISTS prefix_baseline (
@@ -112,6 +113,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # `_cmd_block_add` do ClientGuard gera esse texto) é reclassificada.
         conn.execute("ALTER TABLE flowspec_rules ADD COLUMN origin TEXT NOT NULL DEFAULT 'flowguard'")
         conn.execute("UPDATE flowspec_rules SET origin = 'clientguard' WHERE label LIKE '%ClientGuard%'")
+        conn.commit()
+    if "peer" not in flowspec_cols:
+        # qual peer BGP recebeu o announce ('main' = NE8000BGP, o único que existia
+        # até aqui) — necessário pra saber pra quem mandar o withdraw depois, agora
+        # que existe mais de uma sessão BGP possível (ver bgp/manager.py).
+        conn.execute("ALTER TABLE flowspec_rules ADD COLUMN peer TEXT NOT NULL DEFAULT 'main'")
         conn.commit()
 
 
@@ -280,12 +287,12 @@ def insert_flowspec_rule(conn: sqlite3.Connection, rule: dict) -> int:
     cur = conn.execute(
         """INSERT INTO flowspec_rules
            (created_at, expires_at, attack_id, dst_prefix, src_prefix, protocol,
-            dst_port, src_port, tcp_flags, pkt_len, action, label, origin)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            dst_port, src_port, tcp_flags, pkt_len, action, label, origin, peer)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (rule["created_at"], rule["expires_at"], rule.get("attack_id"), rule.get("dst_prefix"),
          rule.get("src_prefix"), rule.get("protocol"), rule.get("dst_port"), rule.get("src_port"),
          rule.get("tcp_flags"), rule.get("pkt_len"), rule["action"], rule.get("label", ""),
-         rule.get("origin", "flowguard")),
+         rule.get("origin", "flowguard"), rule.get("peer", "main")),
     )
     conn.commit()
     return cur.lastrowid
@@ -435,6 +442,16 @@ def dismiss_attack(conn: sqlite3.Connection, attack_id: int) -> bool:
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def mark_attack_mitigated(conn: sqlite3.Connection, attack_id: int) -> None:
+    """Marca que uma mitigação (manual ou automática) foi aplicada de fato pra esse
+    ataque — chamada por BgpManager.ban/flowspec_add sempre que attack_id vem
+    preenchido e a regra foi anunciada com sucesso. Nunca desmarca (nem no
+    unban/flowspec_del): é registro de "isso já foi mitigado alguma vez", não
+    "está mitigado agora", igual ao resto do histórico de attacks."""
+    conn.execute("UPDATE attacks SET mitigated = 1 WHERE id = ?", (attack_id,))
+    conn.commit()
 
 
 def dismiss_all_active_attacks(conn: sqlite3.Connection) -> int:

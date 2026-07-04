@@ -116,14 +116,23 @@ def rtbh_withdraw(prefix: str) -> str:
     return f"withdraw route {prefix}"
 
 
-def build_command(action: str, kind: str, rule: dict) -> str:
+def build_command(action: str, kind: str, rule: dict, neighbor: str | None = None) -> str:
+    """neighbor (opcional): IP do peer BGP alvo — sem isso, o ExaBGP propaga o
+    comando pra TODOS os peers configurados que casem a address-family (comportamento
+    de antes de existir mais de um neighbor no exabgp.conf). Com múltiplos peers
+    (ex.: NE8000BGP + NE8000-PPPOE), regras destinadas a só um deles devem
+    especificar o neighbor pra não anunciar onde não faz sentido (nunca vai casar
+    tráfego lá, mas polui o estado BGP anunciado e a auditoria)."""
     if kind == "flowspec":
-        return flowspec_announce(rule) if action == "announce" else flowspec_withdraw(rule)
-    if kind == "rtbh":
+        command = flowspec_announce(rule) if action == "announce" else flowspec_withdraw(rule)
+    elif kind == "rtbh":
         if action == "announce":
-            return rtbh_announce(rule["dst_prefix"], rule["community"], rule["nexthop"])
-        return rtbh_withdraw(rule["dst_prefix"])
-    raise ValueError(f"kind desconhecido: {kind}")
+            command = rtbh_announce(rule["dst_prefix"], rule["community"], rule["nexthop"])
+        else:
+            command = rtbh_withdraw(rule["dst_prefix"])
+    else:
+        raise ValueError(f"kind desconhecido: {kind}")
+    return f"neighbor {neighbor} {command}" if neighbor else command
 
 
 # Campos de match FIXOS por attack_type (o que define a assinatura do ataque —

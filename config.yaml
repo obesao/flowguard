@@ -42,6 +42,19 @@ bgp:
   peer_ip: 10.77.10.1
   rtbh_community: 2626:669
   nexthop_blackhole: 10.77.10.2
+  # segunda sessão BGP (mesmo exabgp.conf, mesmo processo) — NE8000-PPPOE, único
+  # ponto da rede onde o IP do cliente CGNAT ainda é o privado (100.64.0.0/10),
+  # antes do A10 traduzir pra público. RTBH continua só no peer 'main' (conceito
+  # de blackhole de borda, não se aplica aqui); FlowSpec por src_prefix pra
+  # mitigar cliente abusivo usa este peer (bgp/manager.py resolve por nome:
+  # flowspec_add(..., peer="pppoe")).
+  peer_ip_pppoe: 10.70.70.1
+  # equipamento em warmode.yaml correspondente a cada peer, usado só pra
+  # verificação via SSH de uma regra (bgp/manager.py.verify_rule) — não afeta
+  # a sessão BGP em si. 'main' não precisa de entrada aqui (routercfg/apply.py
+  # já usa NE8000BGP como default); confirmado que são equipamentos DIFERENTES
+  # (management IPs distintos em warmode.yaml), não o mesmo NE8000 com 2 peers.
+  peer_device_pppoe: HUAWEI-PPPOE-222
 ai:
   enabled: true
   env_file: /root/ai/.env

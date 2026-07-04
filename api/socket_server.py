@@ -105,7 +105,7 @@ class SocketServer:
         return {"ok": True, "status": status, "top": top, "attacks": attacks, "monitor": monitor, "bgp": bgp}
 
     async def _cmd_bgp_status(self, request: dict) -> dict:
-        status = await self.daemon.bgp_manager.status()
+        status = await self.daemon.bgp_manager.status(peer=request.get("peer", "main"))
         return {"ok": True, **status}
 
     async def _cmd_status(self, request: dict) -> dict:
@@ -205,7 +205,8 @@ class SocketServer:
         else:
             return {"ok": False, "error": "rule deve ser string ou objeto"}
         return await self.daemon.bgp_manager.flowspec_add(rule, attack_id=request.get("attack_id"), ttl_s=request.get("ttl_s"),
-                                                            origin=request.get("origin", "flowguard"))
+                                                            origin=request.get("origin", "flowguard"),
+                                                            peer=request.get("peer", "main"))
 
     async def _cmd_flowspec_del(self, request: dict) -> dict:
         rule_id = request.get("rule_id")
@@ -219,6 +220,16 @@ class SocketServer:
 
     async def _cmd_flowspec_del_all(self, request: dict) -> dict:
         return await self.daemon.bgp_manager.withdraw_all()
+
+    async def _cmd_rule_verify(self, request: dict) -> dict:
+        rule_id = request.get("rule_id")
+        if not rule_id:
+            return {"ok": False, "error": "rule_id obrigatório"}
+        try:
+            rule_id = int(rule_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "rule_id inválido"}
+        return await self.daemon.bgp_manager.verify_rule(rule_id)
 
     async def _cmd_dismiss_attack(self, request: dict) -> dict:
         attack_id = request.get("attack_id")

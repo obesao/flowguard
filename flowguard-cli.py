@@ -116,6 +116,7 @@ def cmd_status(args: argparse.Namespace, sock_path: str) -> None:
     resp = send_command(sock_path, {"cmd": "status"})
     die_on_error(resp)
     bgp = send_command(sock_path, {"cmd": "bgp_status"})
+    bgp_pppoe = send_command(sock_path, {"cmd": "bgp_status", "peer": "pppoe"})
     table = Table(title="FlowGuard — Status do Daemon", show_header=False)
     table.add_row("PID", str(resp["pid"]))
     table.add_row("Uptime", f"{resp['uptime_s']:.0f}s")
@@ -128,9 +129,14 @@ def cmd_status(args: argparse.Namespace, sock_path: str) -> None:
         peer_line = fmt_bgp_state(bgp)
         if bgp.get("peer_ip"):
             peer_line += f"  ({bgp['peer_ip']})"
-        table.add_row("BGP (ExaBGP)", peer_line)
+        table.add_row("BGP (ExaBGP) — NE8000BGP", peer_line)
     else:
-        table.add_row("BGP (ExaBGP)", f"[dim]indisponível: {bgp.get('error')}[/dim]")
+        table.add_row("BGP (ExaBGP) — NE8000BGP", f"[dim]indisponível: {bgp.get('error')}[/dim]")
+    if bgp_pppoe.get("ok") and bgp_pppoe.get("peer_state") != "unconfigured":
+        peer_line = fmt_bgp_state(bgp_pppoe)
+        if bgp_pppoe.get("peer_ip"):
+            peer_line += f"  ({bgp_pppoe['peer_ip']})"
+        table.add_row("BGP (ExaBGP) — NE8000-PPPOE", peer_line)
     console.print(table)
 
 
@@ -377,6 +383,9 @@ def cmd_toggles_set(args: argparse.Namespace, sock_path: str) -> None:
     _print_simple(resp, ok_message=f"{args.key} = {args.value}")
 
 
+_AUTO_MODE_LABELS = {"off": "desligado", "suggestion": "sim (perfil)", "rtbh": "sim (RTBH direto)"}
+
+
 def cmd_mitigation_list(args: argparse.Namespace, sock_path: str) -> None:
     resp = send_command(sock_path, {"cmd": "mitigation_profiles"})
     die_on_error(resp)
@@ -385,15 +394,20 @@ def cmd_mitigation_list(args: argparse.Namespace, sock_path: str) -> None:
     table.add_column("Estratégia")
     table.add_column("Limiar de pacote")
     table.add_column("Limite de banda")
+    table.add_column("Automático")
     for attack_type, profile in resp["profiles"].items():
+        auto_mode = profile.get("auto_mode", "off")
         table.add_row(
             attack_type, profile.get("kind", "-"),
             f"{profile['pkt_len_min']}b" if "pkt_len_min" in profile else "-",
             f"{profile.get('rate_limit_mbps', '-')} Mbps",
+            _AUTO_MODE_LABELS.get(auto_mode, auto_mode),
         )
     console.print(table)
     console.print("[dim]kind: rtbh (blackhole total) | discard (FlowSpec, só o tráfego do ataque) | "
                    "rate_limit (FlowSpec, só limita banda)[/dim]")
+    console.print("[dim]Automático só tem efeito nos prefixos com auto_mitigate: true "
+                   "(flowguard-cli monitor add --auto-mitigate)[/dim]")
 
 
 def cmd_mitigation_set(args: argparse.Namespace, sock_path: str) -> None:
@@ -404,8 +418,10 @@ def cmd_mitigation_set(args: argparse.Namespace, sock_path: str) -> None:
         fields["pkt_len_min"] = args.pkt_len_min
     if args.rate_limit_mbps is not None:
         fields["rate_limit_mbps"] = args.rate_limit_mbps
+    if args.auto_mode is not None:
+        fields["auto_mode"] = args.auto_mode
     if not fields:
-        console.print("[red]informe pelo menos um de --kind/--pkt-len-min/--rate-limit-mbps[/red]")
+        console.print("[red]informe pelo menos um de --kind/--pkt-len-min/--rate-limit-mbps/--auto-mode[/red]")
         return
     resp = send_command(sock_path, {"cmd": "set_mitigation_profiles", "profiles": {args.attack_type: fields}})
     _print_simple(resp, ok_message=f"{args.attack_type}: {fields}")
@@ -863,6 +879,10 @@ def main() -> None:
                                    help="limiar de tamanho de pacote em bytes (só dns_amp/ntp_amp)")
     p_mitigation_set.add_argument("--rate-limit-mbps", type=float, dest="rate_limit_mbps",
                                    help="limite de banda em Mbps (usado quando kind=rate_limit)")
+    p_mitigation_set.add_argument("--auto-mode", choices=configio.MITIGATION_AUTO_MODES, dest="auto_mode",
+                                   help="off (nunca dispara sozinho) | suggestion (aplica o kind acima "
+                                        "sozinho) | rtbh (bloqueia o prefixo sozinho) — só tem efeito nos "
+                                        "prefixos com auto_mitigate: true")
     p_mitigation_set.set_defaults(func=cmd_mitigation_set)
 
     p_whitelist = sub.add_parser("whitelist")

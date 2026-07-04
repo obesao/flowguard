@@ -10,7 +10,7 @@ ddos_volumetrico:
   kind: rtbh
   rate_limit_mbps: 100.0
 dns_amp:
-  kind: discard
+  kind: rtbh
   pkt_len_min: 512
   rate_limit_mbps: 50
 ntp_amp:

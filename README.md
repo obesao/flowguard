@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.19.0**
+**Versão atual: v1.20.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,41 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.20.0 — 2026-07-04 — Mitigação automática + verificação de regras via SSH e 2º peer BGP na borda
+- **Mitigação automática** (pedido do usuário): `mitigation_profiles.yaml` ganhou
+  `auto_mode` por tipo de ataque — `off` (padrão, nada muda sozinho), `suggestion`
+  (aplica sozinho o mesmo perfil do botão "Aplicar Sugestão", na abertura do
+  ataque) ou `rtbh` (bloqueio total sozinho, igual ao botão "Mitigar"). Só tem
+  efeito combinado com uma segunda trava por prefixo/cliente: `auto_mitigate:
+  true` em `protected_prefixes.yaml`, campo que já existia (exposto há tempo na
+  aba Monitor do portal e no `flowguard-cli monitor add --auto-mitigate`) mas
+  nunca tinha sido lido por nenhum código — a engine de detecção nunca olhava
+  pra ele. `BgpManager.auto_mitigate()` (novo) reaproveita a mesma lógica de
+  `suggest_mitigation`/`ban`/`flowspec_add` já usada pelos botões manuais,
+  chamado pela engine (`analyzer/engine.py`) só no momento em que um ataque
+  ABRE (nunca a cada ciclo de 30s de um ataque já ativo, então nunca reaplica a
+  mesma mitigação duas vezes). `flowguard-cli mitigation set --auto-mode
+  off|suggestion|rtbh` e nova coluna "Automático" na aba Configuração >
+  Mitigação do portal.
+- Efeito colateral corrigido de passagem: a coluna `mitigated` da tabela
+  `attacks` existia desde sempre no schema (e já era exibida como "sim"/"não"
+  no CLI e no portal) mas nunca tinha código nenhum escrevendo nela — sempre
+  mostrava "não". Agora `BgpManager.ban()`/`flowspec_add()` marcam
+  `mitigated=1` sempre que uma regra é anunciada com sucesso associada a um
+  `attack_id`, cobrindo automaticamente tanto a mitigação manual (botões
+  "Mitigar"/"Aplicar Sugestão" já existentes) quanto a nova automática.
+- 13 testes novos (`tests/test_auto_mitigation.py`), 104 no total.
+- **Verificação de regras via SSH + segunda sessão BGP (peer PPPoE/CGNAT da borda)**:
+  `bgp/manager.py` passou a suportar múltiplos peers BGP por nome lógico
+  (`main`/`pppoe`, `bgp.peer_ip_pppoe` em `config.yaml`) no mesmo processo ExaBGP —
+  `status(peer=...)`/`flowspec_add(..., peer=...)` resolvem o IP do peer
+  correspondente; RTBH continua sempre no peer `main` (conceito de blackhole de
+  borda, não se aplica a outros peers). Nova `BgpManager.verify_rule(rule_id)`
+  confere via SSH (`routercfg/verify.py`, novo módulo) se uma regra de
+  `flowspec_rules` está de fato presente no roteador — cobre o caso de o banco
+  achar uma regra ativa/expirada/revertida e o roteador discordar. `flowguard-cli
+  status` agora mostra as duas sessões BGP.
 
 ### v1.19.0 — 2026-07-03 — Reversão do Modo Guerra (revert_commands por equipamento)
 - Pedido do usuário: um botão "Sair do Modo Guerra" no portal, pra desfazer

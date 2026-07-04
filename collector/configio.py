@@ -127,16 +127,26 @@ def save_feature_toggles(path: str, changes: dict) -> dict:
 # fica ajustável em vez de fixo.
 MITIGATION_KINDS = ("rtbh", "discard", "rate_limit")
 
+# auto_mode controla se a mitigação sai sozinha na abertura do ataque (sem esperar
+# clique manual): "off" (padrão — nada muda pra quem nunca configurou isso),
+# "suggestion" (espelha o botão "Aplicar Sugestão", usa kind/pkt_len_min/
+# rate_limit_mbps abaixo), "rtbh" (espelha o botão "Mitigar", bloqueio total
+# direto, ignorando o kind configurado). Ver bgp/manager.BgpManager.auto_mitigate.
+# Além do tipo de ataque estar com auto_mode != "off", o PREFIXO em si precisa ter
+# auto_mitigate: true em protected_prefixes.yaml (aba Monitor) — as duas travas
+# precisam estar ligadas, nenhuma sozinha basta.
+MITIGATION_AUTO_MODES = ("off", "suggestion", "rtbh")
+
 # pkt_len_min só existe (e só faz sentido) pra dns_amp/ntp_amp — nos outros tipos de
 # amplificação o tamanho do pacote nunca fez parte do match original.
 DEFAULT_MITIGATION_PROFILES = {
-    "ddos_volumetrico": {"kind": "rtbh", "rate_limit_mbps": 100},
-    "dns_amp": {"kind": "discard", "pkt_len_min": 512, "rate_limit_mbps": 50},
-    "ntp_amp": {"kind": "discard", "pkt_len_min": 400, "rate_limit_mbps": 50},
-    "ssdp_amp": {"kind": "discard", "rate_limit_mbps": 50},
-    "memcached_amp": {"kind": "discard", "rate_limit_mbps": 50},
-    "cldap_amp": {"kind": "discard", "rate_limit_mbps": 50},
-    "anomalia_baseline": {"kind": "rtbh", "rate_limit_mbps": 50},
+    "ddos_volumetrico": {"kind": "rtbh", "rate_limit_mbps": 100, "auto_mode": "off"},
+    "dns_amp": {"kind": "discard", "pkt_len_min": 512, "rate_limit_mbps": 50, "auto_mode": "off"},
+    "ntp_amp": {"kind": "discard", "pkt_len_min": 400, "rate_limit_mbps": 50, "auto_mode": "off"},
+    "ssdp_amp": {"kind": "discard", "rate_limit_mbps": 50, "auto_mode": "off"},
+    "memcached_amp": {"kind": "discard", "rate_limit_mbps": 50, "auto_mode": "off"},
+    "cldap_amp": {"kind": "discard", "rate_limit_mbps": 50, "auto_mode": "off"},
+    "anomalia_baseline": {"kind": "rtbh", "rate_limit_mbps": 50, "auto_mode": "off"},
 }
 
 MITIGATION_PROFILES_HEADER = (
@@ -146,6 +156,11 @@ MITIGATION_PROFILES_HEADER = (
     "#   discard     - FlowSpec: descarta só o tráfego que casa o padrão do ataque\n"
     "#   rate_limit  - FlowSpec: não descarta, só limita a banda do tráfego que casa\n"
     "# pkt_len_min (bytes) e rate_limit_mbps são os parâmetros de intensidade do filtro.\n"
+    "# auto_mode - dispara a mitigação sozinha na abertura do ataque, sem clique manual:\n"
+    "#   off        - nunca dispara sozinho (padrão)\n"
+    "#   suggestion - aplica o kind acima automaticamente (Aplicar Sugestão automático)\n"
+    "#   rtbh       - bloqueia o prefixo inteiro automaticamente (Mitigar automático)\n"
+    "# Só tem efeito nos prefixos com auto_mitigate: true em protected_prefixes.yaml.\n"
     "# Editável via portal (aba Configuração > Mitigação) ou flowguard-cli mitigation set.\n"
     "# Chave/campo ausente ou arquivo inexistente = comportamento original."
 )
@@ -183,6 +198,9 @@ def _validate_mitigation_changes(changes: dict) -> None:
             raise ValueError(f"{attack_type}: campo(s) desconhecido(s): {', '.join(unknown_fields)}")
         if "kind" in fields and fields["kind"] not in MITIGATION_KINDS:
             raise ValueError(f"{attack_type}.kind inválido ({fields['kind']!r}) — use um de {MITIGATION_KINDS}")
+        if "auto_mode" in fields and fields["auto_mode"] not in MITIGATION_AUTO_MODES:
+            raise ValueError(f"{attack_type}.auto_mode inválido ({fields['auto_mode']!r}) — "
+                              f"use um de {MITIGATION_AUTO_MODES}")
         for numeric_field in ("pkt_len_min", "rate_limit_mbps"):
             if numeric_field in fields:
                 try:

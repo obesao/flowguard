@@ -2,10 +2,12 @@
 bgp/speaker.py pelo socket dedicado a ele, e mantém o estado das regras em
 flowspec_rules (sobrevive a restart do daemon e permite expirar por TTL).
 
-`ban`/`unban` (RTBH) e `flowspec_add`/`flowspec_del` são sempre iniciados pelo
-operador (CLI ou portal) — a engine de detecção (analyzer/engine.py) só notifica,
-não chama nada aqui diretamente. Auto-mitigação completa (mitigation.auto_mode)
-fica para uma fase futura.
+`ban`/`unban` (RTBH) e `flowspec_add`/`flowspec_del` continuam podendo ser
+iniciados pelo operador (CLI ou portal). A engine de detecção (analyzer/engine.py)
+também pode chamar `auto_mitigate` diretamente na abertura de um ataque, quando o
+tipo de ataque tem `mitigation_profiles.<tipo>.auto_mode != "off"` E o prefixo tem
+`auto_mitigate: true` (protected_prefixes.yaml) — as duas travas precisam estar
+ligadas, nenhuma sozinha dispara nada.
 """
 
 from __future__ import annotations
@@ -15,7 +17,12 @@ import ipaddress
 import logging
 import time
 
+from netmiko.exceptions import NetmikoAuthenticationException, NetmikoTimeoutException
+
+from bgp import flowspec
 from collector import control, storage
+from routercfg import verify
+from routercfg.templates import ValidationError
 
 LOG = logging.getLogger("flowguard.bgp")
 
@@ -30,18 +37,83 @@ class BgpManager:
     def _mitigation_cfg(self) -> dict:
         return self.daemon.config.get("mitigation", {})
 
+    def _peer_ip(self, peer: str) -> str | None:
+        """Resolve o nome lógico de peer ('main', 'pppoe', ...) pro IP configurado em
+        config.yaml (bgp.peer_ip pro 'main', bgp.peer_ip_<nome> pros demais) — permite
+        múltiplas sessões BGP simultâneas no mesmo exabgp.conf (ver neighbor em
+        bgp/flowspec.build_command). 'main' é sempre bgp.peer_ip, pra não quebrar
+        nenhuma regra/config já existente de antes de existir mais de um peer."""
+        bgp_cfg = self._bgp_cfg()
+        if peer == "main":
+            return bgp_cfg.get("peer_ip")
+        return bgp_cfg.get(f"peer_ip_{peer}")
+
+    def _device_for_peer(self, peer: str) -> str | None:
+        """Resolve o nome lógico de peer pro nome do equipamento em warmode.yaml,
+        usado só pra verificação via SSH (verify_rule) — a sessão BGP em si nunca
+        depende disso. 'main' pode devolver None (routercfg.apply._device_for(None)
+        já usa 'NE8000BGP' como default) — só peers adicionais exigem mapeamento
+        explícito em bgp.peer_device_<nome>, senão a verificação falha com erro
+        claro em vez de silenciosamente apontar pro equipamento errado."""
+        if peer == "main":
+            return self._bgp_cfg().get("peer_device_main")
+        return self._bgp_cfg().get(f"peer_device_{peer}")
+
+    async def verify_rule(self, rule_id: int) -> dict:
+        """Confere via SSH (routercfg.verify) se uma regra de flowspec_rules está
+        DE FATO no roteador — funciona pra regra ativa, expirada ou revertida (é
+        exatamente esse último caso — "banco diz revertida, será que o roteador
+        concorda?" — que motivou a feature; ver bugs reais desta base onde o
+        estado local e o estado real da borda ficaram dessincronizados)."""
+        row = await self.daemon.run_read_db(storage.get_flowspec_rule, rule_id)
+        if not row:
+            return {"ok": False, "error": "regra não encontrada"}
+
+        peer = row["peer"] if "peer" in row.keys() else "main"
+        device_name = self._device_for_peer(peer)
+        if device_name is None and peer != "main":
+            return {"ok": False, "error": f"peer '{peer}' sem equipamento mapeado para "
+                                           f"verificação (bgp.peer_device_{peer} em config.yaml)"}
+
+        session = await self.status(peer)
+
+        loop = asyncio.get_running_loop()
+        try:
+            router_check = await loop.run_in_executor(
+                None, verify.verify_rule, dict(row), device_name, self._bgp_cfg(),
+            )
+        except ValidationError as exc:
+            router_check = {"match_status": verify.MATCH_ERROR, "detail": str(exc),
+                             "command": None, "raw_output": None}
+        except (NetmikoAuthenticationException, NetmikoTimeoutException) as exc:
+            router_check = {"match_status": verify.MATCH_ERROR, "detail": f"falha ao conectar no roteador: {exc}",
+                             "command": None, "raw_output": None}
+
+        return {
+            "ok": True,
+            "rule": dict(row),
+            "peer": peer,
+            "device_name": device_name or "NE8000BGP",
+            "bgp_session": session,
+            "router_check": router_check,
+            "checked_at": int(time.time()),
+        }
+
     async def _send(self, payload: dict) -> dict:
         sock_path = self._bgp_cfg().get("exabgp_socket", "/var/run/exabgp.sock")
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, control.send_command, sock_path, payload, 4.0)
 
-    async def status(self) -> dict:
-        """Estado da sessão BGP com o NE8000, visto pelo flowguard-speaker (populado via
+    async def status(self, peer: str = "main") -> dict:
+        """Estado de uma sessão BGP, visto pelo flowguard-speaker (populado via
         notificações "neighbor-changes" do ExaBGP — ver bgp/speaker.py). peer_state é
         sempre "up" ou "down": "down" cobre sessão caída, ainda conectando (TCP up mas
         BGP não estabelecido) e "nunca recebemos evento nenhum" (speaker acabou de
-        subir, ou exabgp.conf sem `neighbor-changes;` no bloco api)."""
-        peer_ip = self._bgp_cfg().get("peer_ip")
+        subir, ou exabgp.conf sem `neighbor-changes;` no bloco api). peer: nome lógico
+        ('main' = NE8000BGP, ou outro configurado em bgp.peer_ip_<nome>)."""
+        peer_ip = self._peer_ip(peer)
+        if not peer_ip:
+            return {"peer_state": "unconfigured", "peer_ip": None, "detail": f"peer '{peer}' não configurado"}
         resp = await self._send({"action": "status"})
         if not resp.get("ok"):
             return {"peer_state": "down", "peer_ip": peer_ip, "detail": resp.get("error", "erro desconhecido")}
@@ -80,9 +152,12 @@ class BgpManager:
         if budget_error:
             return {"ok": False, "error": budget_error}
 
+        # RTBH é sempre 'main': é um conceito de blackhole na borda (nexthop
+        # discard), não faz sentido em nenhum outro peer que venha a existir.
         resp = await self._send({
             "action": "announce", "kind": "rtbh",
             "rule": {"dst_prefix": prefix, "community": community, "nexthop": nexthop},
+            "neighbor": self._peer_ip("main"),
         })
         if not resp.get("ok"):
             return resp
@@ -92,7 +167,10 @@ class BgpManager:
         rule_id = await self.daemon.run_db(storage.insert_flowspec_rule, self.daemon.conn, {
             "created_at": now, "expires_at": now + ttl_s, "attack_id": attack_id,
             "dst_prefix": prefix, "action": "rtbh", "label": f"ban {prefix}", "origin": origin,
+            "peer": "main",
         })
+        if attack_id is not None:
+            await self.daemon.run_db(storage.mark_attack_mitigated, self.daemon.conn, attack_id)
         LOG.warning("RTBH anunciado: %s (regra id=%s, ttl=%ds)", prefix, rule_id, ttl_s)
         return {"ok": True, "rule_id": rule_id}
 
@@ -102,19 +180,26 @@ class BgpManager:
         except ValueError:
             return {"ok": False, "error": f"endereço/prefixo inválido: {target}"}
 
-        resp = await self._send({"action": "withdraw", "kind": "rtbh", "rule": {"dst_prefix": prefix}})
+        resp = await self._send({
+            "action": "withdraw", "kind": "rtbh", "rule": {"dst_prefix": prefix},
+            "neighbor": self._peer_ip("main"),
+        })
         if resp.get("ok"):
             await self.daemon.run_db(storage.deactivate_flowspec_rules_by_prefix, self.daemon.conn, prefix, "rtbh")
             LOG.info("RTBH retirado: %s", prefix)
         return resp
 
     async def flowspec_add(self, rule: dict, attack_id: int | None = None, ttl_s: int | None = None,
-                            origin: str = "flowguard") -> dict:
+                            origin: str = "flowguard", peer: str = "main") -> dict:
+        neighbor = self._peer_ip(peer)
+        if not neighbor:
+            return {"ok": False, "error": f"peer BGP '{peer}' não configurado (bgp.peer_ip_{peer} em config.yaml)"}
+
         budget_error = await self._check_rule_budget()
         if budget_error:
             return {"ok": False, "error": budget_error}
 
-        resp = await self._send({"action": "announce", "kind": "flowspec", "rule": rule})
+        resp = await self._send({"action": "announce", "kind": "flowspec", "rule": rule, "neighbor": neighbor})
         if not resp.get("ok"):
             return resp
 
@@ -126,10 +211,12 @@ class BgpManager:
             "protocol": rule.get("protocol"), "dst_port": rule.get("dst_port"),
             "src_port": rule.get("src_port"), "tcp_flags": rule.get("tcp_flags"),
             "pkt_len": rule.get("pkt_len"), "action": rule["action"],
-            "label": rule.get("label", ""), "origin": origin,
+            "label": rule.get("label", ""), "origin": origin, "peer": peer,
         }
         rule_id = await self.daemon.run_db(storage.insert_flowspec_rule, self.daemon.conn, row)
-        LOG.warning("FlowSpec anunciado: %s (regra id=%s, ttl=%ds)", rule, rule_id, ttl_s)
+        if attack_id is not None:
+            await self.daemon.run_db(storage.mark_attack_mitigated, self.daemon.conn, attack_id)
+        LOG.warning("FlowSpec anunciado pro peer '%s': %s (regra id=%s, ttl=%ds)", peer, rule, rule_id, ttl_s)
         return {"ok": True, "rule_id": rule_id}
 
     async def flowspec_del(self, rule_id: int) -> dict:
@@ -140,10 +227,38 @@ class BgpManager:
             return {"ok": False, "error": "regra já está inativa"}
 
         kind = "rtbh" if row["action"] == "rtbh" else "flowspec"
-        resp = await self._send({"action": "withdraw", "kind": kind, "rule": dict(row)})
+        neighbor = self._peer_ip(row["peer"] if "peer" in row.keys() else "main")
+        resp = await self._send({"action": "withdraw", "kind": kind, "rule": dict(row), "neighbor": neighbor})
         if resp.get("ok"):
             await self.daemon.run_db(storage.deactivate_flowspec_rule, self.daemon.conn, rule_id)
             LOG.info("regra retirada manualmente: id=%s %s", rule_id, row.get("dst_prefix"))
+        return resp
+
+    async def auto_mitigate(self, attack_id: int, attack_type: str, dst_prefix: str, auto_mode: str) -> dict:
+        """Chamada pela engine de detecção (analyzer/engine.py) na abertura de um
+        ataque, quando as duas travas de auto-mitigação estão ligadas (ver docstring
+        do módulo). auto_mode == "rtbh" espelha o botão manual "Mitigar" (bloqueio
+        total do prefixo, ignora o kind configurado); auto_mode == "suggestion"
+        espelha o botão "Aplicar Sugestão" (usa mitigation_profiles — pode virar
+        rtbh/discard/rate_limit dependendo do tipo). Só é chamada 1x por abertura de
+        ataque (engine.py só passa por aqui em to_insert/to_notify, nunca em
+        to_update), então não precisa checar aqui se já foi mitigado antes."""
+        if auto_mode == "rtbh":
+            resp = await self.ban(dst_prefix, attack_id=attack_id, origin="flowguard")
+        else:
+            profiles = self.daemon.config.get("mitigation_profiles", {})
+            suggestion = flowspec.suggest_mitigation(attack_type, dst_prefix, profiles)
+            if suggestion["kind"] == "rtbh":
+                resp = await self.ban(dst_prefix, attack_id=attack_id, origin="flowguard")
+            else:
+                resp = await self.flowspec_add(suggestion["rule"], attack_id=attack_id, origin="flowguard")
+
+        if resp.get("ok"):
+            LOG.warning("mitigação automática aplicada: ataque #%s (%s, modo=%s) -> regra id=%s",
+                        attack_id, attack_type, auto_mode, resp.get("rule_id"))
+        else:
+            LOG.error("mitigação automática FALHOU: ataque #%s (%s, modo=%s): %s",
+                       attack_id, attack_type, auto_mode, resp.get("error"))
         return resp
 
     async def expire_cycle(self) -> None:
@@ -151,7 +266,8 @@ class BgpManager:
         rows = await self.daemon.run_read_db(storage.list_expired_flowspec_rules, now)
         for row in rows:
             kind = "rtbh" if row["action"] == "rtbh" else "flowspec"
-            resp = await self._send({"action": "withdraw", "kind": kind, "rule": dict(row)})
+            neighbor = self._peer_ip(row["peer"] if "peer" in row.keys() else "main")
+            resp = await self._send({"action": "withdraw", "kind": kind, "rule": dict(row), "neighbor": neighbor})
             if resp.get("ok"):
                 await self.daemon.run_db(storage.deactivate_flowspec_rule, self.daemon.conn, row["id"])
                 LOG.info("regra expirada e retirada: id=%s %s (%s)", row["id"], row.get("dst_prefix"), row["action"])
@@ -173,8 +289,9 @@ class BgpManager:
         removed, failed = 0, 0
         for row in rows:
             kind = "rtbh" if row["action"] == "rtbh" else "flowspec"
+            neighbor = self._peer_ip(row["peer"] if "peer" in row.keys() else "main")
             try:
-                resp = await self._send({"action": "withdraw", "kind": kind, "rule": dict(row)})
+                resp = await self._send({"action": "withdraw", "kind": kind, "rule": dict(row), "neighbor": neighbor})
             except Exception:
                 LOG.exception("falha ao retirar regra id=%s", row["id"])
                 resp = {"ok": False}

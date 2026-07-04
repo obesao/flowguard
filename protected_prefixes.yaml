@@ -6,53 +6,53 @@
   auto_mitigate: true
   notify_wa: true
   thresholds:
-    ddos_bps_threshold: 800000000
+    ddos_bps_threshold: 30000000000
 - prefix: 177.86.17.0/24
   customer: POX Network Core
   capacity_mbps: 100000
   auto_mitigate: true
   notify_wa: true
   thresholds:
-    ddos_bps_threshold: 8000000000
-    ddos_pps_threshold: 1000000
+    ddos_bps_threshold: 30000000000
 - prefix: 177.86.18.0/24
   customer: POX Network Core
   capacity_mbps: 100000
   auto_mitigate: true
   notify_wa: true
   thresholds:
-    ddos_bps_threshold: 800000000
+    ddos_bps_threshold: 30000000000
 - prefix: 177.86.19.0/24
   customer: ''
   capacity_mbps: 100000
-  auto_mitigate: false
-  notify_wa: false
+  auto_mitigate: true
+  notify_wa: true
+  thresholds:
+    ddos_bps_threshold: 30000000000
 - prefix: 177.86.20.0/24
   customer: ''
   capacity_mbps: 100000
-  auto_mitigate: false
-  notify_wa: false
+  auto_mitigate: true
+  notify_wa: true
   thresholds:
     ddos_bps_threshold: 30000000000
-    ddos_pps_threshold: 3500000
 - prefix: 177.86.21.0/24
   customer: ''
   capacity_mbps: 100000
-  auto_mitigate: false
+  auto_mitigate: true
   notify_wa: false
   thresholds:
     ddos_bps_threshold: 30000000000
-    ddos_pps_threshold: 3500000
 - prefix: 177.86.22.0/24
   customer: ''
   capacity_mbps: 100000
-  auto_mitigate: false
-  notify_wa: false
+  auto_mitigate: true
+  notify_wa: true
+  thresholds:
+    ddos_bps_threshold: 30000000000
 - prefix: 177.86.23.0/24
   customer: ''
   capacity_mbps: 100000
-  auto_mitigate: false
-  notify_wa: false
+  auto_mitigate: true
+  notify_wa: true
   thresholds:
-    ddos_bps_threshold: 1500000000
-    ddos_pps_threshold: 200000
+    ddos_bps_threshold: 30000000000

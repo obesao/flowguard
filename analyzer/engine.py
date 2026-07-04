@@ -60,6 +60,7 @@ class DetectionEngine:
         protected = cfg.get("protected_prefixes", [])
         whitelist = cfg.get("whitelist", [])
         toggles = cfg.get("detection_toggles", {})
+        mitigation_profiles = cfg.get("mitigation_profiles", {})
 
         def toggle_on(key: str) -> bool:
             return toggles.get(key, True)
@@ -173,6 +174,17 @@ class DetectionEngine:
                 self.daemon.notify_attack(attack_id, prefix, attack_type, severity, bps, pps, entry),
                 f"ataque #{attack_id} detectado",
             )
+
+            # Auto-mitigação: só dispara com as DUAS travas ligadas — o tipo de
+            # ataque (mitigation_profiles.<tipo>.auto_mode) e o prefixo/cliente
+            # (protected_prefixes.<prefixo>.auto_mitigate). Roda só aqui (abertura),
+            # nunca em to_update, então nunca reaplica pro mesmo ataque a cada ciclo.
+            auto_mode = (mitigation_profiles.get(attack_type) or {}).get("auto_mode", "off")
+            if auto_mode != "off" and entry.get("auto_mitigate"):
+                self.daemon.fire_and_forget(
+                    self.daemon.bgp_manager.auto_mitigate(attack_id, attack_type, prefix, auto_mode),
+                    f"mitigação automática do ataque #{attack_id}",
+                )
 
         for attack_id, prefix, attack_type, severity, bps_peak in to_close_log(to_close, open_attacks):
             LOG.info("ataque encerrado: %s em %s (pico %.1f Mbps)", attack_type, prefix, bps_peak / 1e6)
