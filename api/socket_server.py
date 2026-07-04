@@ -164,6 +164,13 @@ class SocketServer:
     async def _cmd_rules(self, request: dict) -> dict:
         history = bool(request.get("history", False))
         rules = await self.daemon.run_read_db(storage.list_flowspec_rules, active_only=not history)
+        # pedido do usuário: aba Regras mostrar em qual equipamento cada regra foi
+        # anunciada — mesma resolução peer->equipamento já usada só por verify_rule
+        # (BgpManager._device_for_peer), agora também na listagem normal.
+        for rule in rules:
+            peer = rule.get("peer") or "main"
+            device_name = self.daemon.bgp_manager._device_for_peer(peer)
+            rule["device_name"] = device_name or ("NE8000BGP" if peer == "main" else peer)
         return {"ok": True, "rules": rules}
 
     async def _cmd_monitor_list(self, request: dict) -> dict:
@@ -190,7 +197,8 @@ class SocketServer:
         if not target:
             return {"ok": False, "error": "target obrigatório"}
         return await self.daemon.bgp_manager.ban(target, attack_id=request.get("attack_id"), ttl_s=request.get("ttl_s"),
-                                                  origin=request.get("origin", "flowguard"))
+                                                  origin=request.get("origin", "flowguard"),
+                                                  trigger_type=request.get("trigger_type", "manual"))
 
     async def _cmd_unban(self, request: dict) -> dict:
         target = request.get("target")
@@ -213,7 +221,8 @@ class SocketServer:
             return {"ok": False, "error": "rule deve ser string ou objeto"}
         return await self.daemon.bgp_manager.flowspec_add(rule, attack_id=request.get("attack_id"), ttl_s=request.get("ttl_s"),
                                                             origin=request.get("origin", "flowguard"),
-                                                            peer=request.get("peer", "main"))
+                                                            peer=request.get("peer", "main"),
+                                                            trigger_type=request.get("trigger_type", "manual"))
 
     async def _cmd_flowspec_del(self, request: dict) -> dict:
         rule_id = request.get("rule_id")

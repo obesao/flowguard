@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS flowspec_rules (
   active      INTEGER DEFAULT 1,
   label       TEXT,
   origin      TEXT NOT NULL DEFAULT 'flowguard',
-  peer        TEXT NOT NULL DEFAULT 'main'
+  peer        TEXT NOT NULL DEFAULT 'main',
+  trigger_type TEXT NOT NULL DEFAULT 'manual'
 );
 
 CREATE TABLE IF NOT EXISTS prefix_baseline (
@@ -119,6 +120,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # até aqui) — necessário pra saber pra quem mandar o withdraw depois, agora
         # que existe mais de uma sessão BGP possível (ver bgp/manager.py).
         conn.execute("ALTER TABLE flowspec_rules ADD COLUMN peer TEXT NOT NULL DEFAULT 'main'")
+        conn.commit()
+    if "trigger_type" not in flowspec_cols:
+        # 'manual' (botão "Mitigar"/"Aplicar Sugestão"/bloqueio manual) vs 'auto'
+        # (BgpManager.auto_mitigate, disparado pela engine de detecção) — pedido do
+        # usuário pra sinalizar isso na aba Regras, mesmo padrão que já existia só
+        # em edge_mitigations.trigger_type no ClientGuard. Regras antigas não têm
+        # como saber com certeza (origin/label não distinguem manual de auto),
+        # então ficam 'manual' por padrão — não é um "errado conhecido", é
+        # simplesmente informação que não existia antes desta coluna.
+        conn.execute("ALTER TABLE flowspec_rules ADD COLUMN trigger_type TEXT NOT NULL DEFAULT 'manual'")
         conn.commit()
 
 
@@ -287,12 +298,12 @@ def insert_flowspec_rule(conn: sqlite3.Connection, rule: dict) -> int:
     cur = conn.execute(
         """INSERT INTO flowspec_rules
            (created_at, expires_at, attack_id, dst_prefix, src_prefix, protocol,
-            dst_port, src_port, tcp_flags, pkt_len, action, label, origin, peer)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            dst_port, src_port, tcp_flags, pkt_len, action, label, origin, peer, trigger_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (rule["created_at"], rule["expires_at"], rule.get("attack_id"), rule.get("dst_prefix"),
          rule.get("src_prefix"), rule.get("protocol"), rule.get("dst_port"), rule.get("src_port"),
          rule.get("tcp_flags"), rule.get("pkt_len"), rule["action"], rule.get("label", ""),
-         rule.get("origin", "flowguard"), rule.get("peer", "main")),
+         rule.get("origin", "flowguard"), rule.get("peer", "main"), rule.get("trigger_type", "manual")),
     )
     conn.commit()
     return cur.lastrowid

@@ -265,6 +265,20 @@ def cmd_attack_detail(attack_id: int, sock_path: str) -> None:
                        "limiar configurado, ou rate limit atingido no momento da detecção).[/dim]")
 
 
+def _fmt_rule_mechanism(action: str) -> str:
+    return "RTBH" if action == "rtbh" else "FlowSpec"
+
+
+def _fmt_rule_trigger(trigger_type: str | None) -> str:
+    return "automático" if trigger_type == "auto" else "manual"
+
+
+def _resolve_device_name(peer: str, bgp_cfg: dict) -> str:
+    key = "peer_device_main" if peer == "main" else f"peer_device_{peer}"
+    device_name = bgp_cfg.get(key)
+    return device_name or ("NE8000BGP" if peer == "main" else peer)
+
+
 def cmd_rules(args: argparse.Namespace, sock_path: str) -> None:
     if getattr(args, "history", False):
         _cmd_rules_history(args)
@@ -276,11 +290,18 @@ def cmd_rules(args: argparse.Namespace, sock_path: str) -> None:
     table.add_column("Origem")
     table.add_column("Destino")
     table.add_column("Ação")
+    table.add_column("Mecanismo")
+    table.add_column("Equipamento")
+    table.add_column("Gatilho")
     table.add_column("Expira em")
     now = time.time()
     for row in resp["rules"]:
         ttl = max(0, int(row["expires_at"] - now))
-        table.add_row(str(row["id"]), row.get("src_prefix") or "-", row.get("dst_prefix") or "-", row["action"], f"{ttl}s")
+        table.add_row(
+            str(row["id"]), row.get("src_prefix") or "-", row.get("dst_prefix") or "-", row["action"],
+            _fmt_rule_mechanism(row["action"]), row.get("device_name") or "-",
+            _fmt_rule_trigger(row.get("trigger_type")), f"{ttl}s",
+        )
     if not resp["rules"]:
         console.print("[green]Nenhuma regra FlowSpec ativa.[/green]")
     else:
@@ -306,6 +327,7 @@ def _cmd_rules_history(args: argparse.Namespace) -> None:
     finally:
         conn.close()
 
+    bgp_cfg = cfg.get("bgp", {})
     table = Table(title=f"Histórico completo de regras FlowSpec/RTBH ({len(rules)})")
     table.add_column("ID")
     table.add_column("Criada em")
@@ -313,14 +335,19 @@ def _cmd_rules_history(args: argparse.Namespace) -> None:
     table.add_column("Origem")
     table.add_column("Destino")
     table.add_column("Ação")
+    table.add_column("Mecanismo")
+    table.add_column("Equipamento")
+    table.add_column("Gatilho")
     table.add_column("Rótulo")
     table.add_column("Status")
     for row in rules:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created_at"]))
         status = "[green]ativa[/green]" if row["active"] else "[dim]expirada/removida[/dim]"
         app = "ClientGuard" if row.get("origin") == "clientguard" else "FlowGuard"
+        peer = row.get("peer") or "main"
         table.add_row(str(row["id"]), when, app, row.get("src_prefix") or "-", row.get("dst_prefix") or "-",
-                      row["action"], row.get("label") or "-", status)
+                      row["action"], _fmt_rule_mechanism(row["action"]), _resolve_device_name(peer, bgp_cfg),
+                      _fmt_rule_trigger(row.get("trigger_type")), row.get("label") or "-", status)
     if not rules:
         console.print("[yellow]Nenhuma regra FlowSpec/RTBH foi criada ainda.[/yellow]")
     else:

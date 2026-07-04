@@ -143,7 +143,7 @@ class BgpManager:
         return None
 
     async def ban(self, target: str, attack_id: int | None = None, ttl_s: int | None = None,
-                  origin: str = "flowguard") -> dict:
+                  origin: str = "flowguard", trigger_type: str = "manual") -> dict:
         try:
             prefix = str(ipaddress.ip_network(target, strict=False))
         except ValueError:
@@ -174,7 +174,7 @@ class BgpManager:
         rule_id = await self.daemon.run_db(storage.insert_flowspec_rule, self.daemon.conn, {
             "created_at": now, "expires_at": now + ttl_s, "attack_id": attack_id,
             "dst_prefix": prefix, "action": "rtbh", "label": f"ban {prefix}", "origin": origin,
-            "peer": "main",
+            "peer": "main", "trigger_type": trigger_type,
         })
         if attack_id is not None:
             await self.daemon.run_db(storage.mark_attack_mitigated, self.daemon.conn, attack_id)
@@ -197,7 +197,7 @@ class BgpManager:
         return resp
 
     async def flowspec_add(self, rule: dict, attack_id: int | None = None, ttl_s: int | None = None,
-                            origin: str = "flowguard", peer: str = "main") -> dict:
+                            origin: str = "flowguard", peer: str = "main", trigger_type: str = "manual") -> dict:
         neighbor = self._peer_ip(peer)
         if not neighbor:
             return {"ok": False, "error": f"peer BGP '{peer}' não configurado (bgp.peer_ip_{peer} em config.yaml)"}
@@ -218,7 +218,7 @@ class BgpManager:
             "protocol": rule.get("protocol"), "dst_port": rule.get("dst_port"),
             "src_port": rule.get("src_port"), "tcp_flags": rule.get("tcp_flags"),
             "pkt_len": rule.get("pkt_len"), "action": rule["action"],
-            "label": rule.get("label", ""), "origin": origin, "peer": peer,
+            "label": rule.get("label", ""), "origin": origin, "peer": peer, "trigger_type": trigger_type,
         }
         rule_id = await self.daemon.run_db(storage.insert_flowspec_rule, self.daemon.conn, row)
         if attack_id is not None:
@@ -251,14 +251,15 @@ class BgpManager:
         ataque (engine.py só passa por aqui em to_insert/to_notify, nunca em
         to_update), então não precisa checar aqui se já foi mitigado antes."""
         if auto_mode == "rtbh":
-            resp = await self.ban(dst_prefix, attack_id=attack_id, origin="flowguard")
+            resp = await self.ban(dst_prefix, attack_id=attack_id, origin="flowguard", trigger_type="auto")
         else:
             profiles = self.daemon.config.get("mitigation_profiles", {})
             suggestion = flowspec.suggest_mitigation(attack_type, dst_prefix, profiles)
             if suggestion["kind"] == "rtbh":
-                resp = await self.ban(dst_prefix, attack_id=attack_id, origin="flowguard")
+                resp = await self.ban(dst_prefix, attack_id=attack_id, origin="flowguard", trigger_type="auto")
             else:
-                resp = await self.flowspec_add(suggestion["rule"], attack_id=attack_id, origin="flowguard")
+                resp = await self.flowspec_add(suggestion["rule"], attack_id=attack_id, origin="flowguard",
+                                                trigger_type="auto")
 
         if resp.get("ok"):
             LOG.warning("mitigação automática aplicada: ataque #%s (%s, modo=%s) -> regra id=%s",

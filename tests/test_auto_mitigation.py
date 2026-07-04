@@ -186,6 +186,76 @@ def test_flowspec_add_with_attack_id_marks_attack_mitigated(tmp_path):
     assert storage.get_attack(conn, attack_id)["mitigated"] == 1
 
 
+# --- trigger_type: manual (padrão) vs auto — pedido do usuário pra sinalizar
+# na aba Regras se uma regra foi disparada manualmente ou pela engine ----------
+
+def test_ban_defaults_to_manual_trigger_type(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.ban("177.86.16.0/24"))
+    row = storage.get_flowspec_rule(conn, result["rule_id"])
+    assert row["trigger_type"] == "manual"
+
+
+def test_ban_accepts_explicit_trigger_type(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.ban("177.86.16.0/24", trigger_type="auto"))
+    row = storage.get_flowspec_rule(conn, result["rule_id"])
+    assert row["trigger_type"] == "auto"
+
+
+def test_flowspec_add_defaults_to_manual_trigger_type(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.flowspec_add({"dst_prefix": "177.86.16.0/24", "action": "discard"}))
+    row = storage.get_flowspec_rule(conn, result["rule_id"])
+    assert row["trigger_type"] == "manual"
+
+
+def test_auto_mitigate_rtbh_mode_marks_trigger_type_auto(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    attack_id = _insert_attack(conn, attack_type="dns_amp")
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.auto_mitigate(attack_id, "dns_amp", "177.86.16.0/24", "rtbh"))
+    row = storage.get_flowspec_rule(conn, result["rule_id"])
+    assert row["trigger_type"] == "auto"
+
+
+def test_auto_mitigate_suggestion_mode_marks_trigger_type_auto(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    attack_id = _insert_attack(conn, attack_type="dns_amp")  # perfil default é 'discard'
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.auto_mitigate(attack_id, "dns_amp", "177.86.16.0/24", "suggestion"))
+    row = storage.get_flowspec_rule(conn, result["rule_id"])
+    assert row["trigger_type"] == "auto"
+
+
 # --- storage.get_latest_flowspec_rule_for_attack (mesmo padrão do ClientGuard,
 # ver storage.get_latest_edge_mitigation lá) — usado pra sinalizar na aba
 # Ataques do portal se aquele ataque já tem regra de mitigação e se está em

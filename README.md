@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.24.0**
+**Versão atual: v1.25.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,37 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.25.0 — 2026-07-04 — trigger_type + equipamento em flowspec_rules (base pra etiquetas da aba Regras)
+Pedido do usuário: na aba Regras, sinalizar em cada regra FlowSpec/RTBH como
+foi feito (mecanismo/equipamento), se foi automático ou manual, e se ainda
+está em vigor — mesmo padrão já usado na aba Sinais Suspeitos do ClientGuard.
+**Achado real ao investigar**: `flowspec_rules` nunca teve como distinguir
+"disparada pelo botão Mitigar/Aplicar Sugestão" de "disparada pela engine de
+auto-mitigação" — os dois caminhos gravavam a mesma estrutura, com `origin`
+sempre `"flowguard"` nos dois casos (só distingue FlowGuard de ClientGuard,
+não manual de automático).
+
+- Nova coluna `trigger_type` ('manual' | 'auto') em `flowspec_rules`, migração
+  no mesmo padrão de `origin`/`peer`. `BgpManager.ban()`/`flowspec_add()`
+  ganham parâmetro `trigger_type` (default `'manual'`); `auto_mitigate()`
+  passa `'auto'` nos dois métodos. `_cmd_ban`/`_cmd_flowspec_add` (socket)
+  repassam o valor do request — usado pelo ClientGuard pra marcar suas
+  próprias mitigações automáticas corretamente (ver v1.22.0 do ClientGuard).
+  Regras antigas (antes desta versão) ficam `'manual'` por padrão — não dá
+  pra saber com certeza retroativamente, não é um "errado conhecido".
+- `_cmd_rules` (socket) e o CGI `flowguard-rules.sh` do portal (que lê o
+  SQLite direto, sem passar pelo socket) resolvem `device_name` a partir do
+  `peer` de cada regra — mesma lógica já usada só por `verify_rule`
+  (`BgpManager._device_for_peer`), agora também na listagem normal.
+- `flowguard-cli rules`/`rules --history` ganharam colunas Mecanismo,
+  Equipamento e Gatilho.
+
+9 testes novos (119 no total). Validado em produção real: uma regra
+automática do próprio FlowGuard (`auto_mode: suggestion`, habilitado pelo
+usuário) e outra do ClientGuard via proxy FlowSpec, ambas gravando
+`trigger_type='auto'` e `device_name` corretos (`NE8000BGP` pro peer main,
+`HUAWEI-PPPOE-222` pro pppoe) — confirmado direto no socket, não só em teste.
 
 ### v1.24.0 — 2026-07-04 — Selo de mitigação na aba Ataques (mesmo padrão do ClientGuard)
 Pedido do usuário: aplicar no FlowGuard o mesmo selo de mitigação já feito no
