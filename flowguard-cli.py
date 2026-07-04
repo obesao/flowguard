@@ -168,6 +168,23 @@ def cmd_flows(args: argparse.Namespace, sock_path: str) -> None:
     console.print(table)
 
 
+def _fmt_mitigation_action(action: str | None) -> str:
+    if action == "rtbh":
+        return "RTBH"
+    if action and action.startswith("rate-limit:"):
+        return f"limitado a {int(action.split(':', 1)[1]) // 1_000_000} Mbps"
+    return "discard"
+
+
+def _fmt_attack_mitigation_cell(mitigation: dict | None) -> str:
+    if not mitigation:
+        return "[dim]sem mitigação[/dim]"
+    label = _fmt_mitigation_action(mitigation.get("action"))
+    if mitigation.get("active"):
+        return f"[green]🛡 ativa ({label})[/green]"
+    return f"[dim]encerrada ({label})[/dim]"
+
+
 def cmd_attacks(args: argparse.Namespace, sock_path: str) -> None:
     if args.id is not None:
         cmd_attack_detail(args.id, sock_path)
@@ -182,12 +199,12 @@ def cmd_attacks(args: argparse.Namespace, sock_path: str) -> None:
     table.add_column("Tipo")
     table.add_column("Severidade")
     table.add_column("Pico")
-    table.add_column("Mitigado")
+    table.add_column("Mitigação")
     table.add_column("IA")
     for row in resp["attacks"]:
         table.add_row(
             str(row["id"]), row["dst_prefix"], row["attack_type"], row["severity"],
-            fmt_bps(row["bps_peak"] or 0), "sim" if row["mitigated"] else "não",
+            fmt_bps(row["bps_peak"] or 0), _fmt_attack_mitigation_cell(row.get("mitigation")),
             "sim" if row.get("ai_analysis") else "-",
         )
     if not resp["attacks"]:
@@ -210,6 +227,7 @@ def cmd_attack_detail(attack_id: int, sock_path: str) -> None:
         f"{attack['pps_peak'] or 0:,} pps\n"
         f"Status: {'encerrado' if attack['ts_end'] else '[red]ativo[/red]'}"
         f"{'  |  Alvo (host): ' + attack['target_host'] if attack.get('target_host') else ''}\n"
+        f"Mitigação: {_fmt_attack_mitigation_cell(attack.get('mitigation'))}\n"
         f"Duração: {fmt_duration(summary.get('duration_s', 0))}  |  "
         f"Total: {fmt_bytes(summary.get('total_bytes', 0))}, "
         f"{summary.get('total_packets', 0):,} pacotes, "

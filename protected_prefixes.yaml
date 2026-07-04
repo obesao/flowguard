@@ -13,7 +13,7 @@
   auto_mitigate: true
   notify_wa: true
   thresholds:
-    ddos_bps_threshold: 30000000000
+    ddos_bps_threshold: 35000000000
 - prefix: 177.86.18.0/24
   customer: POX Network Core
   capacity_mbps: 100000

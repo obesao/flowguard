@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.23.0**
+**Versão atual: v1.24.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,44 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.24.0 — 2026-07-04 — Selo de mitigação na aba Ataques (mesmo padrão do ClientGuard)
+Pedido do usuário: aplicar no FlowGuard o mesmo selo de mitigação já feito no
+ClientGuard (v1.22.0) — sinalizar se um ataque já tem regra de mitigação
+associada e se ela está em vigor agora. Nova `storage.
+get_latest_flowspec_rule_for_attack(conn, attack_id)`: última regra (RTBH ou
+FlowSpec) desse ataque, independente de `active`, pra distinguir "nunca
+mitigado" de "já foi mitigado, mas a regra não está mais em vigor" (TTL
+vencido, remoção manual, ou — achado real desta mesma sessão — o
+`flowguard.service` reiniciar, que retira TODAS as regras ativas no shutdown
+gracioso via `BgpManager.withdraw_all`). Diferente do ClientGuard, o FlowGuard
+não persiste um estado "failed": `ban()`/`flowspec_add()` só gravam uma linha
+quando o anúncio BGP dá certo, então só existem os estados "ativa" e
+"encerrada" aqui.
+
+`_cmd_attacks`/`_cmd_attack_detail` (socket) e o CGI `flowguard-attacks.sh`
+(GET lista e `?detail=`) enriquecem cada ataque com `mitigation`.
+`flowguard-cli attacks`/`attacks <id>` ganharam a mesma coluna/linha. A antiga
+coluna "Mitigado" (sim/não, baseada no campo `mitigated` que só registrava
+"foi mitigado alguma vez") foi substituída por esse selo mais rico.
+
+4 testes novos (114 no total). Validado contra o daemon real: CLI mostrando
+"encerrada (RTBH)" corretamente pra um ataque cuja regra RTBH foi retirada
+(confirmado via consulta direta ao socket), e "🛡 ativa" pra ataques com
+mitigação automática em vigor (o próprio `auto_mode: suggestion`, habilitado
+pelo usuário em produção durante esta sessão, gerou casos reais pra validar).
+
+**Achado de auditoria nesta mesma sessão** (não é bug desta versão, mas vale
+registrar): reiniciar o `flowguard.service` pra testar esta feature retirou
+de novo todas as regras ativas — confirmando ao vivo, pela segunda vez nesta
+sessão, que a reconciliação automática do ClientGuard (v1.21.0) reage
+corretamente a esse cenário. Sob a carga gerada (rajada de reconciliação +
+redisparo), threads chegaram a ficar temporariamente na fila do lock global
+de SSH do PBR bypass (confirmado com py-spy, não é impasse — apenas fila
+grande drenando) e, num caso, um `systemctl restart` do ClientGuard no meio
+de um `insert` pendente deixou 2 regras órfãs (ativas no FlowGuard, sem
+registro local correspondente) — baixa severidade, autolimitado (expiram
+pelo TTL), não é um problema recorrente do mecanismo em si.
 
 ### v1.23.0 — 2026-07-04 — Modo Guerra: ativar/desativar equipamento, testar conexão, histórico de execução
 Pedido do usuário: melhorias na configuração do Modo Guerra — opção de

@@ -133,9 +133,14 @@ class SocketServer:
     async def _cmd_attacks(self, request: dict) -> dict:
         history = bool(request.get("history", False))
         window_s, _ = storage.pick_window(request.get("window", "24h"))
-        attacks = await self.daemon.run_read_db(
-            storage.list_attacks, active_only=not history, since_s=window_s,
-        )
+
+        def _query(conn):
+            attacks = storage.list_attacks(conn, active_only=not history, since_s=window_s)
+            for attack in attacks:
+                attack["mitigation"] = storage.get_latest_flowspec_rule_for_attack(conn, attack["id"])
+            return attacks
+
+        attacks = await self.daemon.run_read_db(_query)
         return {"ok": True, "attacks": attacks}
 
     async def _cmd_attack_detail(self, request: dict) -> dict:
@@ -145,6 +150,8 @@ class SocketServer:
         attack = await self.daemon.run_read_db(storage.get_attack, int(attack_id))
         if not attack:
             return {"ok": False, "error": f"ataque #{attack_id} não encontrado"}
+        attack["mitigation"] = await self.daemon.run_read_db(
+            storage.get_latest_flowspec_rule_for_attack, int(attack_id))
         interval_s = self.daemon.config["database"]["aggregate_interval_s"]
         detail = await self.daemon.run_read_db(
             storage.attack_detail, attack["dst_prefix"], attack["ts_start"], attack["ts_end"], 20, interval_s,

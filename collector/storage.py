@@ -303,6 +303,19 @@ def get_flowspec_rule(conn: sqlite3.Connection, rule_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def get_latest_flowspec_rule_for_attack(conn: sqlite3.Connection, attack_id: int) -> dict | None:
+    """Última regra (RTBH ou FlowSpec) associada a esse ataque, independente de estar
+    ativa ou não — usado pela aba Ataques do portal pra sinalizar "esse ataque já tem
+    mitigação, e está em vigor agora?" (mesmo padrão de storage.
+    get_latest_edge_mitigation no ClientGuard). Um ataque pode ter mais de uma regra
+    ao longo do tempo (ex: "Mitigar" manual, depois expira, depois "Aplicar
+    Sugestão") — pega sempre a mais recente."""
+    row = conn.execute(
+        "SELECT * FROM flowspec_rules WHERE attack_id = ? ORDER BY id DESC LIMIT 1", (attack_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def deactivate_flowspec_rule(conn: sqlite3.Connection, rule_id: int) -> None:
     conn.execute("UPDATE flowspec_rules SET active = 0 WHERE id = ?", (rule_id,))
     conn.commit()

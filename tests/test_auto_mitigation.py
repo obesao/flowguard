@@ -186,6 +186,66 @@ def test_flowspec_add_with_attack_id_marks_attack_mitigated(tmp_path):
     assert storage.get_attack(conn, attack_id)["mitigated"] == 1
 
 
+# --- storage.get_latest_flowspec_rule_for_attack (mesmo padrão do ClientGuard,
+# ver storage.get_latest_edge_mitigation lá) — usado pra sinalizar na aba
+# Ataques do portal se aquele ataque já tem regra de mitigação e se está em
+# vigor agora ----------------------------------------------------------------
+
+def test_get_latest_flowspec_rule_for_attack_returns_none_when_never_mitigated(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    attack_id = _insert_attack(conn)
+    assert storage.get_latest_flowspec_rule_for_attack(conn, attack_id) is None
+
+
+def test_get_latest_flowspec_rule_for_attack_returns_active_rule(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    attack_id = _insert_attack(conn)
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    asyncio.run(manager.ban("177.86.16.0/24", attack_id=attack_id))
+    mitigation = storage.get_latest_flowspec_rule_for_attack(conn, attack_id)
+    assert mitigation["action"] == "rtbh"
+    assert mitigation["active"] == 1
+
+
+def test_get_latest_flowspec_rule_for_attack_returns_most_recent(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    attack_id = _insert_attack(conn)
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    first = asyncio.run(manager.ban("177.86.16.0/24", attack_id=attack_id))
+    asyncio.run(manager.unban("177.86.16.0/24"))  # encerra a primeira
+    second = asyncio.run(manager.ban("177.86.16.0/24", attack_id=attack_id))
+
+    mitigation = storage.get_latest_flowspec_rule_for_attack(conn, attack_id)
+    assert mitigation["id"] == second["rule_id"]
+    assert mitigation["id"] != first["rule_id"]
+    assert mitigation["active"] == 1
+
+
+def test_get_latest_flowspec_rule_for_attack_scoped_by_attack_id(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    attack_id_a = _insert_attack(conn, dst_prefix="177.86.16.0/24")
+    attack_id_b = _insert_attack(conn, dst_prefix="177.86.17.0/24")
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    asyncio.run(manager.ban("177.86.16.0/24", attack_id=attack_id_a))
+    assert storage.get_latest_flowspec_rule_for_attack(conn, attack_id_b) is None
+    assert storage.get_latest_flowspec_rule_for_attack(conn, attack_id_a) is not None
+
+
 def test_auto_mitigate_rtbh_mode_calls_ban_ignoring_profile_kind(tmp_path):
     conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
     attack_id = _insert_attack(conn, attack_type="dns_amp")  # perfil default é 'discard'
