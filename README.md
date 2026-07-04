@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.22.0**
+**Versão atual: v1.23.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,36 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.23.0 — 2026-07-04 — Modo Guerra: ativar/desativar equipamento, testar conexão, histórico de execução
+Pedido do usuário: melhorias na configuração do Modo Guerra — opção de
+ativar/desativar um equipamento cadastrado (participar ou não do próximo
+lote), e melhor visibilidade da lista. `warmode.yaml` ganha `enabled` por
+equipamento (default `true`, retrocompatível). `_run_war_mode` filtra
+`enabled=false` antes de montar o lote — o equipamento desativado nem entra
+em `results`/audit log/WhatsApp daquela execução, mas continua salvo
+(credenciais/comandos preservados) pra reativar depois sem recadastrar nada.
+`list_devices()` (usado pelo modal de confirmação do portal) passou a expor
+`enabled`, pro portal mostrar o equipamento desativado esmaecido com "não vai
+rodar" em vez de simplesmente sumir da lista.
+
+Duas funções novas: `test_device()` — abre/fecha uma sessão SSH sem enviar
+nenhum comando de produção, só pra validar credencial/alcance antes de
+precisar de verdade num incidente (reaproveita a mesma lógica de conexão de
+`_run_device`, extraída pra `_connect_device()`); e `last_runs_by_device()` —
+lê o audit log (`/var/log/flowguard-warmode-audit.jsonl`, existia desde a
+v1.9.0 mas nunca era lido de volta) e retorna a última execução de cada
+equipamento (ok/falha, quando, erro), anexada automaticamente em
+`load_devices_masked()` pra aparecer na tela de configuração sem precisar
+abrir log manualmente.
+
+Validado sem tocar em nenhum equipamento real: `test_device()` chamado
+diretamente contra um host inexistente (`10.255.255.254`) confirma o timeout
+de 12s e a mensagem de erro esperada; lista de equipamentos/enabled/last_run
+testada carregando o `warmode.yaml` real de produção (só leitura). Ver
+changelog do `flowguard-portal` (v1.29.0) pro lado da UI (card colapsável,
+toggle, badge de última execução, botão Testar/Duplicar/Remover com
+confirmação).
 
 ### v1.22.0 — 2026-07-04 — Duração personalizável do RTBH (auto-expira sozinho)
 - Pedido do usuário: poder escolher por quanto tempo um bloqueio RTBH fica no

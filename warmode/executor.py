@@ -66,10 +66,14 @@ def _write_state(active: bool, path: str = STATE_PATH) -> None:
 
 def load_devices_masked(config_path: str = DEFAULT_CONFIG_PATH) -> list[dict]:
     """Pra tela de configuração no portal — nunca devolve a senha salva, só se
-    ela existe (has_password), pra não reexibir segredo já gravado."""
+    ela existe (has_password), pra não reexibir segredo já gravado. Inclui
+    enabled (participa ou não do próximo lote) e last_run (audit log) pra
+    dar visibilidade na própria lista, sem precisar abrir log/rodar de fato."""
     cfg = load_config(config_path)
+    last_runs = last_runs_by_device()
     out = []
     for d in cfg.get("devices") or []:
+        name = d.get("name") or d.get("host", "")
         out.append({
             "name": d.get("name", ""),
             "host": d.get("host", ""),
@@ -78,8 +82,10 @@ def load_devices_masked(config_path: str = DEFAULT_CONFIG_PATH) -> list[dict]:
             "username": d.get("username", ""),
             "has_password": bool(d.get("password")),
             "enable_mode": bool(d.get("enable_mode", False)),
+            "enabled": bool(d.get("enabled", True)),
             "commands": d.get("commands") or [],
             "revert_commands": d.get("revert_commands") or [],
+            "last_run": last_runs.get(name),
         })
     return out
 
@@ -99,6 +105,7 @@ def save_devices(devices: list[dict], config_path: str = DEFAULT_CONFIG_PATH) ->
             "device_type": d["device_type"],
             "username": d.get("username", ""),
             "enable_mode": bool(d.get("enable_mode", False)),
+            "enabled": bool(d.get("enabled", True)),
             "commands": [c for c in (d.get("commands") or []) if c.strip()],
             "revert_commands": [c for c in (d.get("revert_commands") or []) if c.strip()],
         }
@@ -134,6 +141,25 @@ def _send_commands(conn, commands: list[str], timeout: float) -> str:
     return "\n\n".join(outputs)
 
 
+def _connect_device(device: dict, timeout: float):
+    """Abre a sessão SSH/Netmiko — compartilhado entre _run_device (roda
+    comandos de verdade) e test_device (só valida credencial/alcance)."""
+    conn = ConnectHandler(
+        device_type=device["device_type"],
+        host=device["host"],
+        port=int(device.get("port") or 22),
+        username=device.get("username", ""),
+        password=device.get("password", ""),
+        secret=device.get("enable_secret", device.get("password", "")),
+        timeout=timeout,
+        conn_timeout=timeout,
+        fast_cli=False,
+    )
+    if device.get("enable_mode"):
+        conn.enable()
+    return conn
+
+
 def _run_device(device: dict, timeout: float, mode: str = "apply") -> dict:
     name = device.get("name") or device.get("host", "?")
     commands = device.get("commands" if mode == "apply" else "revert_commands") or []
@@ -145,19 +171,7 @@ def _run_device(device: dict, timeout: float, mode: str = "apply") -> dict:
 
     conn = None
     try:
-        conn = ConnectHandler(
-            device_type=device["device_type"],
-            host=device["host"],
-            port=device.get("port", 22),
-            username=device["username"],
-            password=device["password"],
-            secret=device.get("enable_secret", device.get("password", "")),
-            timeout=timeout,
-            conn_timeout=timeout,
-            fast_cli=False,
-        )
-        if device.get("enable_mode"):
-            conn.enable()
+        conn = _connect_device(device, timeout)
         output = _send_commands(conn, commands, timeout)
         return {
             "device": name, "ok": True, "output": output,
@@ -175,6 +189,67 @@ def _run_device(device: dict, timeout: float, mode: str = "apply") -> dict:
                 conn.disconnect()
             except Exception:
                 pass
+
+
+def test_device(device: dict, config_path: str = DEFAULT_CONFIG_PATH, timeout: float = 12.0) -> dict:
+    """Só abre/fecha a sessão SSH (nenhum comando de produção é enviado) — pra
+    validar credencial/alcance de um equipamento antes de precisar dele de
+    verdade num incidente. Se password vier em branco (equipamento já salvo,
+    operador não redigitou), usa a senha já gravada pra aquele host — mesma
+    regra de "campo em branco = mantém o que já tem" de save_devices."""
+    device = dict(device)
+    if not device.get("password") and device.get("host"):
+        existing = {d.get("host"): d for d in (load_config(config_path).get("devices") or [])}
+        device["password"] = existing.get(device["host"], {}).get("password", "")
+
+    t0 = time.monotonic()
+    conn = None
+    try:
+        conn = _connect_device(device, timeout)
+        return {"ok": True, "elapsed_s": round(time.monotonic() - t0, 1)}
+    except NetmikoAuthenticationException:
+        return {"ok": False, "error": "autenticação falhou (usuário/senha)", "elapsed_s": round(time.monotonic() - t0, 1)}
+    except NetmikoTimeoutException:
+        return {"ok": False, "error": "timeout de conexão SSH", "elapsed_s": round(time.monotonic() - t0, 1)}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "elapsed_s": round(time.monotonic() - t0, 1)}
+    finally:
+        if conn is not None:
+            try:
+                conn.disconnect()
+            except Exception:
+                pass
+
+
+def last_runs_by_device(audit_log_path: str = AUDIT_LOG_PATH, max_lines: int = 1000) -> dict[str, dict]:
+    """Última execução de cada equipamento (por nome), lida do audit log —
+    pra mostrar na tela de configuração sem precisar abrir log/rodar de novo.
+    Entradas são append-only em ordem cronológica, então sobrescrever ao
+    iterar deixa o valor mais recente por equipamento. Só olha as últimas
+    max_lines linhas (Modo Guerra roda raramente — não é por ciclo de
+    agregação — mas evita crescer sem limite se isso mudar)."""
+    p = Path(audit_log_path)
+    if not p.exists():
+        return {}
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()[-max_lines:]
+    except OSError:
+        return {}
+    latest: dict[str, dict] = {}
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        for r in record.get("results") or []:
+            device_name = r.get("device")
+            if not device_name:
+                continue
+            latest[device_name] = {
+                "ts": record.get("ts"), "mode": record.get("mode"),
+                "ok": r.get("ok"), "error": r.get("error"),
+            }
+    return latest
 
 
 def _audit(trigger: str, mode: str, results: list[dict]) -> None:
@@ -214,13 +289,16 @@ def _notify_whatsapp(trigger: str, mode: str, results: list[dict]) -> None:
 
 def list_devices(config_path: str = DEFAULT_CONFIG_PATH) -> list[dict]:
     """Metadados dos equipamentos configurados, sem senha — pra exibir na UI antes
-    de disparar de fato."""
+    de disparar de fato. Inclui enabled=false pros desativados aparecerem
+    esmaecidos no modal ("não vai rodar") em vez de simplesmente sumirem —
+    evita o operador se perguntar "cadê meu equipamento" no meio de um incidente."""
     cfg = load_config(config_path)
     return [
         {
             "name": d.get("name") or d.get("host", "?"),
             "host": d.get("host"),
             "device_type": d.get("device_type"),
+            "enabled": bool(d.get("enabled", True)),
             "n_commands": len(d.get("commands") or []),
             "n_revert_commands": len(d.get("revert_commands") or []),
         }
@@ -230,7 +308,10 @@ def list_devices(config_path: str = DEFAULT_CONFIG_PATH) -> list[dict]:
 
 def _run_war_mode(mode: str, config_path: str, timeout: float, trigger: str) -> list[dict]:
     cfg = load_config(config_path)
-    devices = cfg.get("devices") or []
+    # equipamento com enabled=false fica de fora do lote de propósito (ex:
+    # manutenção, credencial vencida) sem precisar apagar comandos/credenciais
+    # salvos — não aparece nem em "results", então nem no audit log/WhatsApp
+    devices = [d for d in (cfg.get("devices") or []) if d.get("enabled", True)]
     if not devices:
         return []
     results = []
