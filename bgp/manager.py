@@ -20,7 +20,7 @@ import time
 from netmiko.exceptions import NetmikoAuthenticationException, NetmikoTimeoutException
 
 from bgp import flowspec
-from collector import control, storage
+from collector import configio, control, storage
 from routercfg import verify
 from routercfg.templates import ValidationError
 
@@ -36,6 +36,13 @@ class BgpManager:
 
     def _mitigation_cfg(self) -> dict:
         return self.daemon.config.get("mitigation", {})
+
+    def _rtbh_default_ttl_s(self) -> int:
+        """Duração padrão do RTBH, configurável (mitigation_profiles.yaml,
+        RTBH_TTL_KEY) — separada de mitigation.default_ttl_s (config.yaml), que
+        continua valendo só pras regras FlowSpec (discard/rate_limit)."""
+        profiles = self.daemon.config.get("mitigation_profiles", {})
+        return profiles.get(configio.RTBH_TTL_KEY, configio.DEFAULT_RTBH_TTL_S)
 
     def _peer_ip(self, peer: str) -> str | None:
         """Resolve o nome lógico de peer ('main', 'pppoe', ...) pro IP configurado em
@@ -163,7 +170,7 @@ class BgpManager:
             return resp
 
         now = int(time.time())
-        ttl_s = ttl_s or self._mitigation_cfg().get("default_ttl_s", 3600)
+        ttl_s = ttl_s or self._rtbh_default_ttl_s()
         rule_id = await self.daemon.run_db(storage.insert_flowspec_rule, self.daemon.conn, {
             "created_at": now, "expires_at": now + ttl_s, "attack_id": attack_id,
             "dst_prefix": prefix, "action": "rtbh", "label": f"ban {prefix}", "origin": origin,

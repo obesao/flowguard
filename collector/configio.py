@@ -137,6 +137,16 @@ MITIGATION_KINDS = ("rtbh", "discard", "rate_limit")
 # precisam estar ligadas, nenhuma sozinha basta.
 MITIGATION_AUTO_MODES = ("off", "suggestion", "rtbh")
 
+# rtbh_default_ttl_s: duração padrão (segundos) do bloqueio RTBH — depois desse
+# tempo a regra expira sozinha e é retirada (ver BgpManager.expire_cycle). É uma
+# chave GLOBAL, reservada dentro do mesmo mitigation_profiles.yaml (não um campo
+# por tipo de ataque como os de cima) — só vale pro botão "Mitigar"/auto_mode
+# "rtbh"; FlowSpec (discard/rate_limit) continua usando mitigation.default_ttl_s
+# do config.yaml, sem mudança. Pode ser sobrescrita pontualmente por quem chama
+# ban() (ex: o operador escolhe outra duração na hora de clicar "Mitigar").
+RTBH_TTL_KEY = "rtbh_default_ttl_s"
+DEFAULT_RTBH_TTL_S = 3600
+
 # pkt_len_min só existe (e só faz sentido) pra dns_amp/ntp_amp — nos outros tipos de
 # amplificação o tamanho do pacote nunca fez parte do match original.
 DEFAULT_MITIGATION_PROFILES = {
@@ -161,6 +171,9 @@ MITIGATION_PROFILES_HEADER = (
     "#   suggestion - aplica o kind acima automaticamente (Aplicar Sugestão automático)\n"
     "#   rtbh       - bloqueia o prefixo inteiro automaticamente (Mitigar automático)\n"
     "# Só tem efeito nos prefixos com auto_mitigate: true em protected_prefixes.yaml.\n"
+    "# rtbh_default_ttl_s - duração padrão (segundos) do bloqueio RTBH (botão \"Mitigar\"\n"
+    "#   e auto_mode=rtbh) antes de expirar e ser retirado sozinho. Chave global, não é\n"
+    "#   por tipo de ataque. FlowSpec continua usando mitigation.default_ttl_s (config.yaml).\n"
     "# Editável via portal (aba Configuração > Mitigação) ou flowguard-cli mitigation set.\n"
     "# Chave/campo ausente ou arquivo inexistente = comportamento original."
 )
@@ -168,16 +181,25 @@ MITIGATION_PROFILES_HEADER = (
 
 def load_mitigation_profiles(path: str) -> dict:
     """Retorna os perfis mesclados com os defaults — nunca falta um tipo de ataque nem
-    um campo dele, mesmo se o arquivo não existir ainda ou tiver só algumas chaves."""
+    um campo dele, mesmo se o arquivo não existir ainda ou tiver só algumas chaves.
+    O dict retornado também carrega a chave global RTBH_TTL_KEY (não é um tipo de
+    ataque, ver definição acima) — suggest_mitigation()/auto_mitigate() só fazem
+    .get(attack_type), então essa chave extra nunca colide com um tipo real."""
     merged = {attack_type: dict(fields) for attack_type, fields in DEFAULT_MITIGATION_PROFILES.items()}
+    merged[RTBH_TTL_KEY] = DEFAULT_RTBH_TTL_S
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
     except FileNotFoundError:
         data = None
     if data:
+        if RTBH_TTL_KEY in data:
+            try:
+                merged[RTBH_TTL_KEY] = int(data[RTBH_TTL_KEY])
+            except (TypeError, ValueError):
+                pass
         for attack_type, fields in data.items():
-            if attack_type not in merged or not isinstance(fields, dict):
+            if attack_type not in DEFAULT_MITIGATION_PROFILES or not isinstance(fields, dict):
                 continue
             for key, value in fields.items():
                 if key in merged[attack_type]:
@@ -186,10 +208,19 @@ def load_mitigation_profiles(path: str) -> dict:
 
 
 def _validate_mitigation_changes(changes: dict) -> None:
-    unknown_types = sorted(t for t in changes if t not in DEFAULT_MITIGATION_PROFILES)
+    unknown_types = sorted(t for t in changes if t not in DEFAULT_MITIGATION_PROFILES and t != RTBH_TTL_KEY)
     if unknown_types:
         raise ValueError(f"tipo(s) de ataque desconhecido(s): {', '.join(unknown_types)}")
+    if RTBH_TTL_KEY in changes:
+        try:
+            value = int(changes[RTBH_TTL_KEY])
+        except (TypeError, ValueError):
+            raise ValueError(f"{RTBH_TTL_KEY} precisa ser um número inteiro de segundos")
+        if value <= 0:
+            raise ValueError(f"{RTBH_TTL_KEY} precisa ser positivo")
     for attack_type, fields in changes.items():
+        if attack_type == RTBH_TTL_KEY:
+            continue
         if not isinstance(fields, dict):
             raise ValueError(f"{attack_type}: valor precisa ser um objeto {{campo: valor}}")
         allowed = DEFAULT_MITIGATION_PROFILES[attack_type]
@@ -219,7 +250,10 @@ def save_mitigation_profiles(path: str, changes: dict) -> dict:
     _validate_mitigation_changes(changes)
     current = load_mitigation_profiles(path)
     for attack_type, fields in changes.items():
-        current[attack_type].update(fields)
+        if attack_type == RTBH_TTL_KEY:
+            current[RTBH_TTL_KEY] = int(fields)
+        else:
+            current[attack_type].update(fields)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(MITIGATION_PROFILES_HEADER.rstrip() + "\n")

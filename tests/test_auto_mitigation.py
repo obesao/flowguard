@@ -64,6 +64,73 @@ def test_save_and_load_mitigation_profiles_roundtrip_auto_mode(tmp_path):
     assert reloaded["dns_amp"]["auto_mode"] == "suggestion"
 
 
+# --- configio: rtbh_default_ttl_s (chave global, não por tipo de ataque) --
+
+def test_load_mitigation_profiles_defaults_rtbh_ttl(tmp_path):
+    reloaded = configio.load_mitigation_profiles(str(tmp_path / "nao-existe.yaml"))
+    assert reloaded[configio.RTBH_TTL_KEY] == configio.DEFAULT_RTBH_TTL_S
+
+
+def test_save_and_load_rtbh_ttl_roundtrip(tmp_path):
+    path = str(tmp_path / "mitigation_profiles.yaml")
+    updated = configio.save_mitigation_profiles(path, {configio.RTBH_TTL_KEY: 600})
+    assert updated[configio.RTBH_TTL_KEY] == 600
+    # tipos de ataque não são afetados
+    assert updated["dns_amp"]["kind"] == "discard"
+    reloaded = configio.load_mitigation_profiles(path)
+    assert reloaded[configio.RTBH_TTL_KEY] == 600
+
+
+def test_validate_mitigation_changes_rejects_non_positive_rtbh_ttl():
+    with pytest.raises(ValueError, match="rtbh_default_ttl_s"):
+        configio._validate_mitigation_changes({configio.RTBH_TTL_KEY: 0})
+
+
+def test_validate_mitigation_changes_rejects_non_numeric_rtbh_ttl():
+    with pytest.raises(ValueError, match="rtbh_default_ttl_s"):
+        configio._validate_mitigation_changes({configio.RTBH_TTL_KEY: "dez minutos"})
+
+
+def test_ban_uses_configured_rtbh_default_ttl(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    config = {
+        "bgp": {"exabgp_socket": "/fake.sock", "peer_ip": "10.77.10.1",
+                 "rtbh_community": "262620:666", "nexthop_blackhole": "0.0.0.0"},
+        "mitigation": {},
+        "mitigation_profiles": {**configio.DEFAULT_MITIGATION_PROFILES, configio.RTBH_TTL_KEY: 600},
+    }
+    manager = BgpManager(FakeDaemon(conn, config))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    before = int(time.time())
+    result = asyncio.run(manager.ban("177.86.16.0/24"))
+    row = storage.get_flowspec_rule(conn, result["rule_id"])
+    assert 595 <= row["expires_at"] - before <= 605  # ~600s, não os 3600s do default antigo
+
+
+def test_ban_explicit_ttl_overrides_configured_default(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    config = {
+        "bgp": {"exabgp_socket": "/fake.sock", "peer_ip": "10.77.10.1",
+                 "rtbh_community": "262620:666", "nexthop_blackhole": "0.0.0.0"},
+        "mitigation": {},
+        "mitigation_profiles": {**configio.DEFAULT_MITIGATION_PROFILES, configio.RTBH_TTL_KEY: 600},
+    }
+    manager = BgpManager(FakeDaemon(conn, config))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    before = int(time.time())
+    result = asyncio.run(manager.ban("177.86.16.0/24", ttl_s=120))
+    row = storage.get_flowspec_rule(conn, result["rule_id"])
+    assert 115 <= row["expires_at"] - before <= 125  # respeita o override pontual, não os 600s do default
+
+
 # --- BgpManager: mark_attack_mitigated + auto_mitigate ------------------
 
 def test_ban_with_attack_id_marks_attack_mitigated(tmp_path):

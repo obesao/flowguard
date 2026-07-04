@@ -337,7 +337,10 @@ def cmd_monitor_list(args: argparse.Namespace, sock_path: str) -> None:
 
 
 def cmd_ban(args: argparse.Namespace, sock_path: str) -> None:
-    resp = send_command(sock_path, {"cmd": "ban", "target": args.target})
+    payload = {"cmd": "ban", "target": args.target}
+    if args.ttl_minutes is not None:
+        payload["ttl_s"] = int(args.ttl_minutes * 60)
+    resp = send_command(sock_path, payload)
     _print_simple(resp)
 
 
@@ -395,7 +398,10 @@ def cmd_mitigation_list(args: argparse.Namespace, sock_path: str) -> None:
     table.add_column("Limiar de pacote")
     table.add_column("Limite de banda")
     table.add_column("Automático")
+    rtbh_ttl_s = resp["profiles"].get(configio.RTBH_TTL_KEY, configio.DEFAULT_RTBH_TTL_S)
     for attack_type, profile in resp["profiles"].items():
+        if attack_type == configio.RTBH_TTL_KEY:
+            continue
         auto_mode = profile.get("auto_mode", "off")
         table.add_row(
             attack_type, profile.get("kind", "-"),
@@ -408,6 +414,9 @@ def cmd_mitigation_list(args: argparse.Namespace, sock_path: str) -> None:
                    "rate_limit (FlowSpec, só limita banda)[/dim]")
     console.print("[dim]Automático só tem efeito nos prefixos com auto_mitigate: true "
                    "(flowguard-cli monitor add --auto-mitigate)[/dim]")
+    console.print(f"[dim]Duração padrão do RTBH (botão \"Mitigar\"/auto_mode=rtbh): "
+                   f"{rtbh_ttl_s}s (~{rtbh_ttl_s / 60:.0f} min) — flowguard-cli mitigation rtbh-ttl <minutos> "
+                   f"pra mudar, ou --ttl-minutes em 'ban'/'mitigar' pra um valor pontual[/dim]")
 
 
 def cmd_mitigation_set(args: argparse.Namespace, sock_path: str) -> None:
@@ -425,6 +434,20 @@ def cmd_mitigation_set(args: argparse.Namespace, sock_path: str) -> None:
         return
     resp = send_command(sock_path, {"cmd": "set_mitigation_profiles", "profiles": {args.attack_type: fields}})
     _print_simple(resp, ok_message=f"{args.attack_type}: {fields}")
+
+
+def cmd_mitigation_rtbh_ttl(args: argparse.Namespace, sock_path: str) -> None:
+    if args.minutes is None:
+        resp = send_command(sock_path, {"cmd": "mitigation_profiles"})
+        die_on_error(resp)
+        ttl_s = resp["profiles"].get(configio.RTBH_TTL_KEY, configio.DEFAULT_RTBH_TTL_S)
+        console.print(f"Duração padrão do RTBH: {ttl_s}s (~{ttl_s / 60:.0f} min)")
+        return
+    ttl_s = int(args.minutes * 60)
+    resp = send_command(sock_path, {
+        "cmd": "set_mitigation_profiles", "profiles": {configio.RTBH_TTL_KEY: ttl_s},
+    })
+    _print_simple(resp, ok_message=f"duração padrão do RTBH = {ttl_s}s (~{args.minutes:.0f} min)")
 
 
 def cmd_whitelist_add(args: argparse.Namespace, sock_path: str) -> None:
@@ -837,6 +860,9 @@ def main() -> None:
 
     p_ban = sub.add_parser("ban")
     p_ban.add_argument("target")
+    p_ban.add_argument("--ttl-minutes", type=float, dest="ttl_minutes",
+                        help="duração do bloqueio RTBH em minutos (padrão: mitigation_profiles.yaml "
+                             "rtbh_default_ttl_s, ver 'mitigation list')")
     p_ban.set_defaults(func=cmd_ban)
 
     p_unban = sub.add_parser("unban")
@@ -884,6 +910,11 @@ def main() -> None:
                                         "sozinho) | rtbh (bloqueia o prefixo sozinho) — só tem efeito nos "
                                         "prefixos com auto_mitigate: true")
     p_mitigation_set.set_defaults(func=cmd_mitigation_set)
+    p_mitigation_rtbh_ttl = mitigation_sub.add_parser(
+        "rtbh-ttl", help="duração padrão do bloqueio RTBH (botão \"Mitigar\"/auto_mode=rtbh)")
+    p_mitigation_rtbh_ttl.add_argument("minutes", type=float, nargs="?",
+                                        help="nova duração em minutos (omitir só mostra o valor atual)")
+    p_mitigation_rtbh_ttl.set_defaults(func=cmd_mitigation_rtbh_ttl)
 
     p_whitelist = sub.add_parser("whitelist")
     whitelist_sub = p_whitelist.add_subparsers(dest="whitelist_action", required=True)

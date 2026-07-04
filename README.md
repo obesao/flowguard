@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.21.0**
+**Versão atual: v1.22.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,36 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.22.0 — 2026-07-04 — Duração personalizável do RTBH (auto-expira sozinho)
+- Pedido do usuário: poder escolher por quanto tempo um bloqueio RTBH fica no
+  ar antes de ser retirado sozinho ("ex: jogar pra blackhole por 10 minutos
+  depois retirar"), de forma configurável — não fixo no código. O mecanismo de
+  expiração automática (`BgpManager.expire_cycle`) já existia pra toda regra
+  FlowSpec/RTBH; o que faltava era conseguir personalizar essa duração
+  especificamente pro RTBH.
+- `mitigation_profiles.yaml` ganha uma chave global (não por tipo de ataque,
+  ver `configio.RTBH_TTL_KEY`) `rtbh_default_ttl_s` (padrão: 3600s/1h, mesmo
+  valor de antes — comportamento não muda pra quem não configurar nada).
+  `BgpManager.ban()` passa a usar esse valor como padrão em vez do antigo
+  `mitigation.default_ttl_s` do `config.yaml` (que continua valendo só pras
+  regras FlowSpec de discard/rate_limit, sem mudança). A mitigação automática
+  (v1.20.0, `auto_mode=rtbh` ou `suggestion` quando o kind é rtbh) também usa
+  esse mesmo padrão, por consistência com o botão manual.
+- `flowguard-cli mitigation rtbh-ttl [minutos]` mostra (sem argumento) ou
+  define o padrão. `flowguard-cli ban <alvo> --ttl-minutes N` e o botão
+  "Mitigar" da aba Ataques (novo campo de minutos ao lado do botão, no menu
+  "Ações") permitem sobrescrever pontualmente só daquela vez, sem mudar o
+  padrão configurado.
+- 6 testes novos (roundtrip/validação do `rtbh_default_ttl_s`, `ban()` usando
+  o padrão configurado vs. um override pontual), 110 no total.
+- Validado ponta a ponta: CLI (`mitigation rtbh-ttl`, `ban --ttl-minutes`)
+  contra o daemon real, TTL da regra resultante conferido em `flowguard-cli
+  rules` (bateu com o valor pedido, não com o antigo default de 1h); portal
+  validado com Playwright real (campo na aba Configuração > Mitigação,
+  salvar/resetar, e o campo de minutos dentro do menu "Ações" da aba Ataques
+  sem fechar o menu ao digitar — bug real que teria existido sem o ajuste em
+  `initActionMenus`), 0 erros de console.
 
 ### v1.21.0 — 2026-07-04 — Modo Guerra: botão único (liga/desliga) + aviso periódico por WhatsApp com IA
 Pedido do usuário: unificar os botões de ligar/desligar o Modo Guerra num só
