@@ -111,8 +111,9 @@ não manual de automático).
 9 testes novos (119 no total). Validado em produção real: uma regra
 automática do próprio FlowGuard (`auto_mode: suggestion`, habilitado pelo
 usuário) e outra do ClientGuard via proxy FlowSpec, ambas gravando
-`trigger_type='auto'` e `device_name` corretos (`NE8000BGP` pro peer main,
-`HUAWEI-PPPOE-222` pro pppoe) — confirmado direto no socket, não só em teste.
+`trigger_type='auto'` e `device_name` corretos (o roteador de borda principal
+pro peer `main`, o peer PPPoE/CGNAT pro `pppoe`) — confirmado direto no
+socket, não só em teste.
 
 ### v1.24.0 — 2026-07-04 — Selo de mitigação na aba Ataques (mesmo padrão do ClientGuard)
 Pedido do usuário: aplicar no FlowGuard o mesmo selo de mitigação já feito no
