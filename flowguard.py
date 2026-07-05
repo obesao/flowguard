@@ -20,7 +20,7 @@ import aiohttp
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ai.client import AIClient
-from analyzer.engine import AMP_PORTS, DetectionEngine
+from analyzer.engine import AMP_PORTS, DetectionEngine, PROTO_TCP, TCP_FLAG_ACK, TCP_FLAG_SYN
 from api.socket_server import SocketServer
 from bgp.manager import BgpManager
 from collector import configio, storage
@@ -343,6 +343,9 @@ class FlowGuardDaemon:
         # totais por (prefixo, src_port) só para portas de amplificação conhecidas — baixa
         # cardinalidade de propósito, não vale a pena rastrear src_port para todo o tráfego
         amp_totals: dict[tuple, dict] = defaultdict(lambda: {"bytes": 0, "packets": 0})
+        # totais de SYN "puro" por prefixo (TCP com SYN setado e ACK não setado) —
+        # usados pela detecção de SYN flood dedicada
+        syn_totals: dict[str, dict] = defaultdict(lambda: {"bytes": 0, "packets": 0})
 
         for rec in records:
             # a NE8000 exporta netstream inbound+outbound em toda interface, então cada
@@ -374,6 +377,11 @@ class FlowGuardDaemon:
                 at = amp_totals[(prefix, rec.src_port)]
                 at["bytes"] += rec.real_bytes
                 at["packets"] += rec.real_packets
+
+            if rec.protocol == PROTO_TCP and (rec.tcp_flags & TCP_FLAG_SYN) and not (rec.tcp_flags & TCP_FLAG_ACK):
+                st = syn_totals[prefix]
+                st["bytes"] += rec.real_bytes
+                st["packets"] += rec.real_packets
 
             # tráfego de saída (cliente protegido como origem) — só quando o src
             # cai num prefixo protegido; sem fallback pra não explodir cardinalidade
@@ -435,8 +443,12 @@ class FlowGuardDaemon:
             key: {"bps": int(v["bytes"] * 8 / interval), "pps": int(v["packets"] / interval)}
             for key, v in amp_totals.items()
         }
+        syn_totals_bps = {
+            prefix: {"bps": int(v["bytes"] * 8 / interval), "pps": int(v["packets"] / interval)}
+            for prefix, v in syn_totals.items()
+        }
         # roda mesmo sem tráfego no ciclo, para fechar ataques que já não estão mais ativos
-        await self.detector.evaluate_cycle(now, proto_totals_bps, amp_totals_bps)
+        await self.detector.evaluate_cycle(now, proto_totals_bps, amp_totals_bps, syn_totals_bps)
         await self.bgp_manager.expire_cycle()
 
     async def ai_report_loop(self) -> None:

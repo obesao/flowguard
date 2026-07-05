@@ -67,6 +67,7 @@ DEFAULT_FEATURE_TOGGLES = {
     "ssdp_amp": True,
     "memcached_amp": True,
     "cldap_amp": True,
+    "syn_flood": True,
     "anomalia_baseline": True,
 }
 
@@ -156,6 +157,7 @@ DEFAULT_MITIGATION_PROFILES = {
     "ssdp_amp": {"kind": "discard", "rate_limit_mbps": 50, "auto_mode": "off"},
     "memcached_amp": {"kind": "discard", "rate_limit_mbps": 50, "auto_mode": "off"},
     "cldap_amp": {"kind": "discard", "rate_limit_mbps": 50, "auto_mode": "off"},
+    "syn_flood": {"kind": "discard", "rate_limit_mbps": 50, "auto_mode": "off"},
     "anomalia_baseline": {"kind": "rtbh", "rate_limit_mbps": 50, "auto_mode": "off"},
 }
 

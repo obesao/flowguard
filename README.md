@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.26.0**
+**Versão atual: v1.27.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,77 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.27.0 — 2026-07-04 — SYN flood: novo tipo de ataque dedicado
+Pedido do usuário: pesquisar como o FastNetMon detecta DDoS e trazer
+melhorias pro FlowGuard (skill nova, `.claude/skills/detection-benchmark/`,
+documenta a pesquisa + o gap analysis pra reuso futuro). Achado principal:
+o FlowGuard já é mais avançado em baseline (EWMA ao vivo vs. o cálculo
+offline único do FastNetMon), mas não tinha SYN flood como tipo de ataque
+dedicado — caía dentro do volumétrico genérico, sem diagnóstico nem
+mitigação cirúrgica próprios.
+
+**Fase 0 (diagnóstico, feito antes de decidir escopo):** fragmentação IP
+também é um gap, mas SSH read-only no NE8000BGP (`display
+current-configuration | include netstream`, autorizado explicitamente)
+confirmou que o NetStream exportado hoje não inclui campos de fragmentação
+— fica documentado como pendência, não implementado neste ciclo (mudança
+de config de roteador é fora do escopo de código).
+
+**SYN flood (`attack_type=syn_flood`):** detecção por proporção de SYN
+"puro" (flag SYN setada, ACK não setada — isola o flood de SYN-ACK de
+handshake real) sobre o TCP total do prefixo, só avaliada acima de um piso
+de pps (`syn_min_pps_floor`, novo) pra não disparar num prefixo quase sem
+tráfego. `syn_ratio_threshold` já existia em `config.yaml` desde sempre,
+mas nunca era lido por nenhum código — só religado, não inventado.
+`tcp_flags` já era decodificado pelo parser NetFlow (`collector/netflow.py`)
+e simplesmente descartado na agregação; `flowguard.py::_aggregate_once`
+ganhou `syn_totals` (mesmo padrão de `amp_totals`). Suprime a anomalia de
+baseline no mesmo ciclo (evita alerta duplicado do mesmo tráfego). Severity
+`high`. Registrado nos 4 lugares onde tipo de ataque precisa existir hoje
+(`DEFAULT_FEATURE_TOGGLES`, `DEFAULT_MITIGATION_PROFILES`,
+`detection_toggles.yaml`, `_MATCH_TEMPLATES`/`_ATTACK_LABELS` do FlowSpec) —
+não existe um registry único, decisão deliberada de não refatorar isso
+agora, fora do escopo pedido. **`auto_mode` nasce `off`** — diferente dos
+outros 6 tipos, que o usuário já tinha configurado como `suggestion` em
+produção; um detector novo e ainda não validado em produção não devia
+herdar auto-mitigação silenciosamente.
+
+**Bug real encontrado e corrigido no processo:** `bgp/flowspec.py::_describe_match`
+indexava `match['src_port']` sem checar presença — quebraria com
+`AttributeError`/`KeyError` pra qualquer `attack_type` sem porta de origem
+fixa (como o `syn_flood` novo, que usa `tcp_flags` em vez de `src_port`).
+Não havia teste nenhum cobrindo `suggest_mitigation`/`_describe_match`
+antes disso — 2 testes novos em `test_bgp_flowspec.py`, incluindo um smoke
+test genérico sobre todo `attack_type` conhecido, pra pegar essa mesma
+classe de bug em qualquer tipo futuro.
+
+**Nota operacional encontrada (não é bug desta versão):** a análise por IA
+está falhando em produção por falta de crédito na conta Anthropic
+(`credit balance is too low`) — não derruba a detecção (design já previa
+isso), só perde o texto explicativo dos ataques até o crédito ser
+reposto.
+
+6 testes novos em `tests/test_auto_mitigation.py` (ratio+piso disparando,
+piso sozinho não disparando, ratio sozinho não disparando, toggle
+desligado suprimindo, compatibilidade retroativa de `evaluate_cycle` sem o
+4º argumento) + 2 em `test_bgp_flowspec.py` — 131 testes no total, suíte
+completa passando.
+
+Validado ponta a ponta em produção com tráfego sintético real
+(`tools/synth_netflow.py syn_flood`, já existia, nunca tinha sido usado
+pra essa finalidade): WhatsApp temporariamente desligado antes do teste
+(mesmo procedimento já usado em versões anteriores pra não alarmar o
+grupo real), 4 rajadas espaçadas 12s pra sustentar acima de
+`min_attack_duration_s` por 2+ ciclos consecutivos (achado no processo:
+rajadas espaçadas ~80-100s caem em ciclos não-consecutivos e resetam o
+timer de duração mínima — só rajadas mais próximas, ~12s, garantem
+continuidade), ataque abriu como `syn_flood`/`high`/sem mitigação
+automática, e fechou sozinho quando o tráfego parou — ciclo completo
+abrir→sustentar→fechar confirmado. WhatsApp religado e serviço reiniciado
+limpo depois. Portal (aba Configuração) confirmado mostrando o toggle e a
+linha de mitigação com "Desligado" no automático (diferente de todo o
+resto, de propósito).
 
 ### v1.26.0 — 2026-07-04 — Ataque não fica "ativo" pra sempre quando a mitigação expira
 Pedido do usuário: um ataque na aba Ataques (portal e CLI) continuava marcado

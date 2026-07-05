@@ -139,12 +139,16 @@ def build_command(action: str, kind: str, rule: dict, neighbor: str | None = Non
 # protocolo/porta de origem — não é um parâmetro de intensidade ajustável). Tipos
 # ausentes daqui (ddos_volumetrico, anomalia_baseline) não têm porta/protocolo fixo
 # pra casar em FlowSpec — o match cai só no dst_prefix inteiro.
+# "[ syn ]" é a sintaxe de bitmask do ExaBGP pra tcp-flags (RFC 5575) — analogia
+# direta com "dst_port"/"pkt_len" acima, mas NUNCA testada contra um anúncio real
+# (validar com "Verificar no roteador" da aba Regras antes de habilitar auto_mode).
 _MATCH_TEMPLATES = {
     "dns_amp": {"protocol": "udp", "src_port": "53"},
     "ntp_amp": {"protocol": "udp", "src_port": "123"},
     "ssdp_amp": {"protocol": "udp", "src_port": "1900"},
     "memcached_amp": {"protocol": "udp", "src_port": "11211"},
     "cldap_amp": {"protocol": "udp", "src_port": "389"},
+    "syn_flood": {"protocol": "tcp", "tcp_flags": "[ syn ]"},
 }
 
 _ATTACK_LABELS = {
@@ -154,14 +158,23 @@ _ATTACK_LABELS = {
     "ssdp_amp": "amplificação SSDP",
     "memcached_amp": "amplificação Memcached",
     "cldap_amp": "amplificação CLDAP",
+    "syn_flood": "SYN flood",
     "anomalia_baseline": "anomalia de baseline",
 }
 
 
 def _describe_match(match: dict) -> str:
+    # src_port/tcp_flags são mutuamente exclusivos hoje (amplificação usa porta de
+    # origem fixa; syn_flood usa a flag TCP) — .get() em vez de indexação direta
+    # porque nem todo match tem os dois (achado real ao adicionar syn_flood: o
+    # código antigo assumia match['src_port'] sempre presente e quebraria aqui).
     if not match:
         return "todo o tráfego pro prefixo"
-    parts = [f"{match['protocol']} origem {match['src_port']}"]
+    parts = [match["protocol"]]
+    if match.get("src_port"):
+        parts.append(f"origem {match['src_port']}")
+    if match.get("tcp_flags"):
+        parts.append(f"flags {match['tcp_flags']}")
     if match.get("pkt_len"):
         parts.append(f"pacote {match['pkt_len']}b")
     return ", ".join(parts)

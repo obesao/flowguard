@@ -18,6 +18,10 @@ detection:
   ddos_pps_threshold: 100000
   ddos_bps_threshold: 500000000
   syn_ratio_threshold: 0.9
+  # piso de pps de TCP total no prefixo antes de avaliar a proporção de SYN acima —
+  # sem isso, um prefixo quase sem tráfego TCP dispara com poucos pacotes (proporção
+  # alta por acaso, não por ataque de verdade)
+  syn_min_pps_floor: 500
   dns_amp_factor: 10
   scan_ports_per_sec: 50
   scan_hosts_per_sec: 100

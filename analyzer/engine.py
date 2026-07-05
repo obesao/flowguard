@@ -32,6 +32,12 @@ AMP_PORTS = {
     389: ("cldap_amp", "high"),
 }
 
+# públicas (sem "_") porque flowguard.py também precisa delas pra agregar
+# syn_totals — mesmo motivo de AMP_PORTS ser público
+PROTO_TCP = 6
+TCP_FLAG_SYN = 0x02
+TCP_FLAG_ACK = 0x10
+
 
 def _is_whitelisted(prefix: str, whitelist: list[str]) -> bool:
     try:
@@ -54,7 +60,8 @@ class DetectionEngine:
         # (dst_prefix, attack_type) -> timestamp em que a condição começou a ser observada
         self._pending: dict[tuple, float] = {}
 
-    async def evaluate_cycle(self, now: int, proto_totals: dict, amp_totals: dict) -> None:
+    async def evaluate_cycle(self, now: int, proto_totals: dict, amp_totals: dict, syn_totals: dict | None = None) -> None:
+        syn_totals = syn_totals or {}
         cfg = self.daemon.config
         detection_cfg = cfg.get("detection", {})
         protected = cfg.get("protected_prefixes", [])
@@ -73,6 +80,10 @@ class DetectionEngine:
         baseline_min_duration = detection_cfg.get("baseline_min_duration_s", min_duration)
         default_bps_threshold = detection_cfg.get("ddos_bps_threshold", 500_000_000)
         default_pps_threshold = detection_cfg.get("ddos_pps_threshold", 100_000)
+        # syn_ratio_threshold já existia no config.yaml de instalações antigas mas nunca
+        # tinha sido lido por nenhum código — só religando um limiar órfão, não inventando
+        syn_ratio_threshold = detection_cfg.get("syn_ratio_threshold", 0.9)
+        syn_min_pps_floor = detection_cfg.get("syn_min_pps_floor", 500)
 
         baseline_enabled = detection_cfg.get("baseline_enabled", True)
         baseline_min_samples = detection_cfg.get("baseline_min_samples", 120)
@@ -128,12 +139,26 @@ class DetectionEngine:
                     self._evaluate(now, prefix, amp_type, severity, amp_hit, amp_bps, amp_pps,
                                     min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
 
-            # Anomalia de baseline: só entra em jogo quando o limiar estático (acima) NÃO
+            # SYN flood: proporção de pacotes SYN "puro" (SYN setado, ACK não setado —
+            # isola o flood de SYN-ACK de resposta legítima a handshake real) sobre o
+            # total de TCP do prefixo. Só avaliada acima de um piso de pps de TCP total
+            # (syn_min_pps_floor) — sem isso, um prefixo quase sem tráfego TCP dispararia
+            # com 2 SYN em 2 pacotes (proporção 100%) sem ser um ataque de verdade.
+            total_tcp = by_proto.get(PROTO_TCP, {})
+            total_tcp_pps = total_tcp.get("pps", 0)
+            syn = syn_totals.get(prefix, {})
+            syn_pps = syn.get("pps", 0)
+            syn_hit = total_tcp_pps >= syn_min_pps_floor and syn_pps / total_tcp_pps >= syn_ratio_threshold if total_tcp_pps else False
+            if toggle_on("syn_flood"):
+                self._evaluate(now, prefix, "syn_flood", "high", syn_hit, syn.get("bps", 0), syn_pps,
+                                min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
+
+            # Anomalia de baseline: só entra em jogo quando nenhum limiar estático (acima)
             # disparou — ela existe pra pegar ataques relevantes pra um cliente PEQUENO
             # (que nunca chegaria perto do limiar fixo global), não pra duplicar alerta
-            # de um pico que o limiar estático já capturou.
+            # de um pico que um limiar estático já capturou.
             anomaly_hit = False
-            if baseline_enabled and not volumetric_hit and not any_amp_hit:
+            if baseline_enabled and not volumetric_hit and not any_amp_hit and not syn_hit:
                 baseline = baselines.get(prefix)
                 if baseline and baseline["samples"] >= baseline_min_samples:
                     bps_std = math.sqrt(max(baseline["bps_var"], 0))
@@ -147,7 +172,7 @@ class DetectionEngine:
                         self._evaluate(now, prefix, "anomalia_baseline", "high", anomaly_hit, total_bps, total_pps,
                                         baseline_min_duration, entry, open_attacks, to_insert, to_update, to_close, to_notify)
 
-            if baseline_enabled and not (volumetric_hit or any_amp_hit or anomaly_hit):
+            if baseline_enabled and not (volumetric_hit or any_amp_hit or syn_hit or anomaly_hit):
                 baseline_updates.append((prefix, total_bps, total_pps, baseline_alpha, now))
 
         inserted_ids: list[int] = []

@@ -34,3 +34,27 @@ def test_build_command_rtbh_with_neighbor():
     rule = {"dst_prefix": "177.86.16.5/32", "community": "2626:669", "nexthop": "10.77.10.2"}
     cmd = flowspec.build_command("announce", "rtbh", rule, neighbor="10.77.10.1")
     assert cmd == "neighbor 10.77.10.1 announce route 177.86.16.5/32 next-hop 10.77.10.2 community [2626:669]"
+
+
+# --- suggest_mitigation / _describe_match --------------------------------
+# Sem teste nenhum antes desta feature (achado real ao adicionar syn_flood:
+# _describe_match indexava match['src_port'] sem checar presença — quebrava
+# na hora pra qualquer attack_type sem porta de origem fixa, ex: syn_flood,
+# que usa tcp_flags em vez de src_port). O smoke test abaixo cobre qualquer
+# tipo futuro que tenha o mesmo problema, não só o syn_flood de hoje.
+
+def test_suggest_mitigation_syn_flood_uses_tcp_flags_match():
+    result = flowspec.suggest_mitigation("syn_flood", "177.86.16.0/24", {"syn_flood": {"kind": "discard"}})
+    assert result["kind"] == "flowspec"
+    assert result["rule"]["protocol"] == "tcp"
+    assert result["rule"]["tcp_flags"] == "[ syn ]"
+    assert "SYN flood" in result["label"]
+
+
+def test_suggest_mitigation_never_crashes_for_any_known_attack_type():
+    from collector import configio
+
+    for attack_type in configio.DEFAULT_MITIGATION_PROFILES:
+        for kind in ("discard", "rate_limit", "rtbh"):
+            result = flowspec.suggest_mitigation(attack_type, "177.86.16.0/24", {attack_type: {"kind": kind}})
+            assert result["label"], attack_type

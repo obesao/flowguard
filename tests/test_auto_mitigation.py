@@ -443,3 +443,92 @@ def test_engine_does_not_auto_mitigate_when_type_auto_mode_is_off(tmp_path):
 
     asyncio.run(_run_cycle(engine, daemon))
     assert daemon.bgp_manager.calls == []
+
+
+# --- engine: syn_flood (proporção de SYN puro / TCP total, com piso de volume) ---
+# proto_totals aqui usa a chave real do protocolo (6 = TCP), diferente do "tcp"
+# ilustrativo usado nos testes de ddos_volumetrico acima — o volumétrico soma
+# todos os valores de by_proto.values() sem se importar com o tipo da chave, mas
+# a checagem de syn_flood precisa achar especificamente by_proto[PROTO_TCP], então
+# só funciona com a chave de verdade (mesmo formato que flowguard.py::_aggregate_once
+# produz em produção).
+
+def _syn_cfg(**detection_overrides):
+    cfg = _base_cfg()
+    # limiares volumétricos altíssimos pra não competir/mascarar o syn_flood
+    cfg["detection"]["ddos_bps_threshold"] = 10**12
+    cfg["detection"]["ddos_pps_threshold"] = 10**9
+    cfg["detection"].update(detection_overrides)
+    return cfg
+
+
+def test_engine_detects_syn_flood_above_ratio_and_floor(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = EngineFakeDaemon(conn, _syn_cfg(syn_ratio_threshold=0.9, syn_min_pps_floor=500))
+    engine = DetectionEngine(daemon)
+
+    proto_totals = {"177.86.16.0/24": {6: {"bps": 500_000, "pps": 1000}}}
+    syn_totals = {"177.86.16.0/24": {"bps": 480_000, "pps": 950}}  # 95% do TCP total é SYN puro
+
+    asyncio.run(engine.evaluate_cycle(int(time.time()), proto_totals, {}, syn_totals))
+
+    attacks = [a for a in storage.list_attacks(conn, active_only=True) if a["attack_type"] == "syn_flood"]
+    assert len(attacks) == 1
+    assert attacks[0]["severity"] == "high"
+
+
+def test_engine_does_not_detect_syn_flood_below_volume_floor(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = EngineFakeDaemon(conn, _syn_cfg(syn_min_pps_floor=500))
+    engine = DetectionEngine(daemon)
+
+    # 100% SYN, mas só 10 pps de TCP total no ciclo — abaixo do piso, não é ataque de verdade
+    proto_totals = {"177.86.16.0/24": {6: {"bps": 5_000, "pps": 10}}}
+    syn_totals = {"177.86.16.0/24": {"bps": 5_000, "pps": 10}}
+
+    asyncio.run(engine.evaluate_cycle(int(time.time()), proto_totals, {}, syn_totals))
+
+    attacks = [a for a in storage.list_attacks(conn, active_only=True) if a["attack_type"] == "syn_flood"]
+    assert attacks == []
+
+
+def test_engine_does_not_detect_syn_flood_below_ratio(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = EngineFakeDaemon(conn, _syn_cfg())
+    engine = DetectionEngine(daemon)
+
+    # volume acima do piso, mas só 20% dos pacotes são SYN puro — tráfego TCP normal
+    proto_totals = {"177.86.16.0/24": {6: {"bps": 500_000, "pps": 1000}}}
+    syn_totals = {"177.86.16.0/24": {"bps": 100_000, "pps": 200}}
+
+    asyncio.run(engine.evaluate_cycle(int(time.time()), proto_totals, {}, syn_totals))
+
+    attacks = [a for a in storage.list_attacks(conn, active_only=True) if a["attack_type"] == "syn_flood"]
+    assert attacks == []
+
+
+def test_engine_syn_flood_toggle_off_suppresses_detection(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    cfg = _syn_cfg()
+    cfg["detection_toggles"] = {"syn_flood": False}
+    daemon = EngineFakeDaemon(conn, cfg)
+    engine = DetectionEngine(daemon)
+
+    proto_totals = {"177.86.16.0/24": {6: {"bps": 500_000, "pps": 1000}}}
+    syn_totals = {"177.86.16.0/24": {"bps": 480_000, "pps": 950}}
+
+    asyncio.run(engine.evaluate_cycle(int(time.time()), proto_totals, {}, syn_totals))
+
+    attacks = [a for a in storage.list_attacks(conn, active_only=True) if a["attack_type"] == "syn_flood"]
+    assert attacks == []
+
+
+def test_engine_evaluate_cycle_backward_compatible_without_syn_totals(tmp_path):
+    """evaluate_cycle(now, proto_totals, amp_totals) sem o 4º argumento continua
+    funcionando (syn_totals é opcional) — não quebra nenhum chamador antigo."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = EngineFakeDaemon(conn, _base_cfg())
+    engine = DetectionEngine(daemon)
+
+    asyncio.run(_run_cycle(engine, daemon))
+    assert len(daemon.bgp_manager.calls) == 1

@@ -7,4 +7,5 @@ ntp_amp: true
 ssdp_amp: true
 memcached_amp: true
 cldap_amp: true
+syn_flood: true
 anomalia_baseline: true
