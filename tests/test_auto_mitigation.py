@@ -45,13 +45,19 @@ class FakeDaemon:
         return None
 
 
-def _insert_attack(conn, dst_prefix="177.86.16.0/24", attack_type="ddos_volumetrico"):
+def _insert_attack(conn, dst_prefix="177.86.16.0/24", attack_type="ddos_volumetrico", target_host="177.86.16.5"):
     now = int(time.time())
     ids = storage.apply_attack_changes(conn, [{
         "ts_start": now, "dst_prefix": dst_prefix, "customer": "teste",
         "attack_type": attack_type, "severity": "critical", "bps_peak": 1, "pps_peak": 1,
     }], [], [])
-    return ids[0]
+    attack_id = ids[0]
+    if target_host:
+        # ban() agora sempre resolve RTBH pro host /32 (ver bgp/manager.py) — a maioria
+        # dos testes precisa de um target_host já pronto pra não depender de flow_aggs
+        conn.execute("UPDATE attacks SET target_host = ? WHERE id = ?", (target_host, attack_id))
+        conn.commit()
+    return attack_id
 
 
 # --- configio: auto_mode ------------------------------------------------
@@ -118,7 +124,7 @@ def test_ban_uses_configured_rtbh_default_ttl(tmp_path):
     manager._send = fake_send
 
     before = int(time.time())
-    result = asyncio.run(manager.ban("177.86.16.0/24"))
+    result = asyncio.run(manager.ban("177.86.16.5/32"))
     row = storage.get_flowspec_rule(conn, result["rule_id"])
     assert 595 <= row["expires_at"] - before <= 605  # ~600s, não os 3600s do default antigo
 
@@ -138,7 +144,7 @@ def test_ban_explicit_ttl_overrides_configured_default(tmp_path):
     manager._send = fake_send
 
     before = int(time.time())
-    result = asyncio.run(manager.ban("177.86.16.0/24", ttl_s=120))
+    result = asyncio.run(manager.ban("177.86.16.5/32", ttl_s=120))
     row = storage.get_flowspec_rule(conn, result["rule_id"])
     assert 115 <= row["expires_at"] - before <= 125  # respeita o override pontual, não os 600s do default
 
@@ -167,7 +173,7 @@ def test_ban_without_attack_id_does_not_touch_mitigated(tmp_path):
         return {"ok": True}
     manager._send = fake_send
 
-    asyncio.run(manager.ban("177.86.17.0/24"))  # sem attack_id
+    asyncio.run(manager.ban("177.86.17.5/32"))  # sem attack_id
     assert storage.get_attack(conn, attack_id)["mitigated"] == 0
 
 
@@ -182,6 +188,135 @@ def test_ban_failure_does_not_mark_mitigated(tmp_path):
 
     asyncio.run(manager.ban("177.86.16.0/24", attack_id=attack_id))
     assert storage.get_attack(conn, attack_id)["mitigated"] == 0
+
+
+# --- RTBH sempre por host /32 -------------------------------------------
+# Achado real em produção: o roteador (NE8000BGP) só aceita RTBH anunciado
+# como host /32 (route-policy flowguard-import-v4 filtra por ip-prefix
+# "ge 32 le 32", desenho herdado de FastNetMon) — anunciar o prefixo inteiro
+# do cliente é rejeitado SILENCIOSAMENTE ("Received total routes: 0" no
+# peer), então o RTBH nunca protegia nada de verdade apesar do sistema achar
+# que tinha aplicado. ban() agora sempre resolve pro host /32 mais atacado
+# antes de anunciar.
+
+def _insert_flow_agg(conn, dst_prefix, ts, top_dst_ips):
+    storage.insert_flow_aggs_batch(conn, [{
+        "ts": ts, "dst_prefix": dst_prefix, "protocol": 6, "dst_port": 0,
+        "bps": 900_000_000, "pps": 200_000, "flow_count": 10, "avg_pkt_size": 500,
+        "top_src_ips": [], "src_countries": {}, "direction": "in", "top_dst_ips": top_dst_ips,
+    }])
+
+
+def test_ban_with_attack_id_announces_target_host_not_whole_prefix(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    attack_id = _insert_attack(conn, target_host="177.86.16.42")
+    manager = BgpManager(FakeDaemon(conn))
+    calls = []
+
+    async def fake_send(payload):
+        calls.append(payload)
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.ban("177.86.16.0/24", attack_id=attack_id))
+    assert result["ok"]
+    assert calls[0]["rule"]["dst_prefix"] == "177.86.16.42/32"
+    row = storage.get_flowspec_rule(conn, result["rule_id"])
+    assert row["dst_prefix"] == "177.86.16.42/32"
+
+
+def test_ban_computes_host_live_when_target_host_not_yet_persisted(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    now = int(time.time())
+    attack_id = _insert_attack(conn, target_host=None)
+    conn.execute("UPDATE attacks SET ts_start = ? WHERE id = ?", (now, attack_id))
+    conn.commit()
+    _insert_flow_agg(conn, "177.86.16.0/24", now, ["177.86.16.77"])
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.ban("177.86.16.0/24", attack_id=attack_id))
+    assert result["ok"]
+    row = storage.get_flowspec_rule(conn, result["rule_id"])
+    assert row["dst_prefix"] == "177.86.16.77/32"
+
+
+def test_ban_without_attack_id_falls_back_to_recent_top_host(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    now = int(time.time())
+    _insert_flow_agg(conn, "177.86.16.0/24", now, ["177.86.16.99"])
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.ban("177.86.16.0/24"))
+    assert result["ok"]
+    row = storage.get_flowspec_rule(conn, result["rule_id"])
+    assert row["dst_prefix"] == "177.86.16.99/32"
+
+
+def test_ban_without_resolvable_host_fails_clearly_instead_of_silently_blackholing_prefix(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    manager = BgpManager(FakeDaemon(conn))
+    calls = []
+
+    async def fake_send(payload):
+        calls.append(payload)
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.ban("177.86.16.0/24"))
+    assert result["ok"] is False
+    assert "/32" in result["error"]
+    assert calls == []  # nunca chegou a anunciar nada pro roteador
+
+
+def test_ban_with_explicit_host32_target_skips_resolution(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    manager = BgpManager(FakeDaemon(conn))
+    calls = []
+
+    async def fake_send(payload):
+        calls.append(payload)
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.ban("177.86.16.42/32"))
+    assert result["ok"]
+    assert calls[0]["rule"]["dst_prefix"] == "177.86.16.42/32"
+
+
+def test_unban_with_customer_prefix_finds_and_removes_the_resolved_host_rule(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    attack_id = _insert_attack(conn, target_host="177.86.16.42")
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    ban_result = asyncio.run(manager.ban("177.86.16.0/24", attack_id=attack_id))
+    unban_result = asyncio.run(manager.unban("177.86.16.0/24"))  # prefixo do cliente, não o host
+
+    assert unban_result == {"ok": True, "removed": 1}
+    assert storage.get_flowspec_rule(conn, ban_result["rule_id"])["active"] == 0
+
+
+def test_unban_with_no_active_rule_in_prefix_fails_clearly(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    manager = BgpManager(FakeDaemon(conn))
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    result = asyncio.run(manager.unban("177.86.16.0/24"))
+    assert result == {"ok": False, "error": "nenhuma regra RTBH ativa encontrada em 177.86.16.0/24"}
 
 
 def test_flowspec_add_with_attack_id_marks_attack_mitigated(tmp_path):
@@ -209,7 +344,7 @@ def test_ban_defaults_to_manual_trigger_type(tmp_path):
         return {"ok": True}
     manager._send = fake_send
 
-    result = asyncio.run(manager.ban("177.86.16.0/24"))
+    result = asyncio.run(manager.ban("177.86.16.5/32"))
     row = storage.get_flowspec_rule(conn, result["rule_id"])
     assert row["trigger_type"] == "manual"
 
@@ -222,7 +357,7 @@ def test_ban_accepts_explicit_trigger_type(tmp_path):
         return {"ok": True}
     manager._send = fake_send
 
-    result = asyncio.run(manager.ban("177.86.16.0/24", trigger_type="auto"))
+    result = asyncio.run(manager.ban("177.86.16.5/32", trigger_type="auto"))
     row = storage.get_flowspec_rule(conn, result["rule_id"])
     assert row["trigger_type"] == "auto"
 

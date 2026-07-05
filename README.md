@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.30.1**
+**Versão atual: v1.31.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,48 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.31.0 — 2026-07-05 — RTBH sempre por host /32 (achado: nunca bloqueava nada de verdade)
+Pedido do usuário: auditoria de um caso real onde o portal mostrava RTBH
+"aplicado" pro ataque em `x.x.x.0/24` mas o host específico continuava
+respondendo ping normalmente.
+
+**Causa raiz** (confirmada via SSH, comandos só leitura no roteador de borda):
+`ban()` sempre anunciou o **prefixo inteiro do cliente** (ex: `/24`) via RTBH.
+O roteador tem uma política de importação que só aceita RTBH como host `/32`
+— `ip-prefix-list` com `ge 32 le 32`, desenho claramente herdado de um
+FastNetMon anterior (que sempre isola o host atacado, nunca o bloco do
+cliente inteiro). Qualquer anúncio mais largo cai no `deny` final da política
+— **rejeitado silenciosamente**: BGP mostrava sessão `Established`/`Up`, o
+FlowGuard mandava a rota certinha (community configurada, next-hop do
+blackhole), mas `Received total routes: 0` no peer confirmava que nada nunca
+foi de fato aceito. Ou seja, **todo RTBH que o
+FlowGuard já tentou aplicar (botão manual "Mitigar" e auto-mitigação de
+`ddos_volumetrico`) nunca protegeu nada de verdade** — só existia no banco
+local e no log, nunca na borda real.
+
+**Correção**: `BgpManager.ban()` agora sempre resolve pro host `/32` mais
+atacado antes de montar o anúncio — usa `attacks.target_host` se já
+calculado, senão recalcula ao vivo via `flow_aggs` (mesmo mecanismo dos
+alertas de WhatsApp da v1.30.0); sem ataque associado (bloqueio manual avulso
+de um prefixo), cai pro host mais ativo recentemente ali. Sem host
+identificável (sem tráfego recente), falha com erro claro em vez de aceitar
+silenciosamente um anúncio que o roteador ia descartar de qualquer jeito.
+`unban()` acompanhou: quem chama continua passando o prefixo do cliente (é o
+que o botão "Liberar" do portal manda), mas agora busca por regras ativas
+**dentro** desse prefixo em vez de exigir igualdade exata — sem isso, liberar
+pelo prefixo do cliente não acharia mais a regra (que passou a ser o host
+`/32`, não o `/24`).
+
+Efeito colateral positivo: RTBH agora blackholeia só o host atacado, não o
+cliente inteiro — menos dano colateral que a v1.31.0 corrige de graça junto
+com o bug.
+
+8 testes novos (`tests/test_auto_mitigation.py`) cobrindo: resolução via
+`target_host` já persistido, cálculo ao vivo quando ainda não persistido,
+fallback sem ataque associado, falha clara sem host identificável, target
+`/32` explícito não sofre resolução, e `unban()` encontrando/revertendo a
+regra pelo prefixo do cliente.
 
 ### v1.30.1 — 2026-07-05 — Corrige "Host/prefixo: None" em regra sem dst_prefix
 Achado logo depois do deploy da v1.30.0, já em produção: regras de bloqueio

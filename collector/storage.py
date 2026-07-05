@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import sqlite3
 import time
@@ -343,24 +344,31 @@ def deactivate_flowspec_rule(conn: sqlite3.Connection, rule_id: int) -> None:
     conn.commit()
 
 
-def deactivate_flowspec_rules_by_prefix(conn: sqlite3.Connection, prefix: str, action: str) -> None:
-    conn.execute(
-        "UPDATE flowspec_rules SET active = 0 WHERE dst_prefix = ? AND action = ? AND active = 1",
-        (prefix, action),
-    )
-    conn.commit()
-
-
-def list_active_flowspec_rules_by_prefix(conn: sqlite3.Connection, prefix: str, action: str) -> list[dict]:
-    """Usado por BgpManager.unban pra capturar attack_id/created_at das regras ANTES
-    de desativá-las por prefixo — deactivate_flowspec_rules_by_prefix não devolve
-    quais linhas afetou, e esse contexto é o que alimenta o alerta de WhatsApp de
-    mitigação revertida."""
+def list_active_flowspec_rules_within_prefix(conn: sqlite3.Connection, prefix: str, action: str) -> list[dict]:
+    """Regras ativas cujo dst_prefix está DENTRO do prefixo dado (ou igual a ele) —
+    usado por BgpManager.unban, que recebe o prefixo do CLIENTE (ex: /24, vindo do
+    portal/CLI), enquanto o RTBH de fato anunciado é sempre um host /32 específico
+    dentro dele (ver BgpManager.ban — o roteador só aceita RTBH por host individual,
+    não por bloco inteiro). Correspondência exata (dst_prefix == prefix) também
+    passa, já que subnet_of considera uma rede subconjunto de si mesma."""
     rows = conn.execute(
-        "SELECT * FROM flowspec_rules WHERE dst_prefix = ? AND action = ? AND active = 1",
-        (prefix, action),
+        "SELECT * FROM flowspec_rules WHERE action = ? AND active = 1", (action,)
     ).fetchall()
-    return [dict(r) for r in rows]
+    try:
+        net = ipaddress.ip_network(prefix, strict=False)
+    except ValueError:
+        return []
+    matches = []
+    for r in rows:
+        d = dict(r)
+        if not d.get("dst_prefix"):
+            continue
+        try:
+            if ipaddress.ip_network(d["dst_prefix"], strict=False).subnet_of(net):
+                matches.append(d)
+        except ValueError:
+            continue
+    return matches
 
 
 def list_expired_flowspec_rules(conn: sqlite3.Connection, now: int) -> list[dict]:

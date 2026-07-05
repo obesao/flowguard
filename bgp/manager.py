@@ -142,12 +142,48 @@ class BgpManager:
             return f"limite de regras FlowSpec/RTBH atingido ({max_rules}) — remova regras antigas antes de adicionar novas"
         return None
 
+    async def _resolve_rtbh_host(self, prefix: str, attack_id: int | None) -> str | None:
+        """Escolhe o host /32 a blackholear dentro de um prefixo mais largo (ver
+        ban()): usa attacks.target_host se já calculado, senão recalcula ao vivo via
+        flow_aggs (mesmo mecanismo de storage.attack_top_host usado nos alertas de
+        WhatsApp). Sem ataque associado (bloqueio manual avulso de um prefixo, sem
+        attack_id), cai pro host mais ativo recentemente no prefixo — melhor
+        aproximação disponível de "quem está sendo atacado agora"."""
+        if attack_id is not None:
+            attack = await self.daemon.run_read_db(storage.get_attack, attack_id)
+            if attack:
+                if attack.get("target_host"):
+                    return attack["target_host"]
+                host = await self.daemon.run_read_db(storage.attack_top_host, prefix, attack["ts_start"], None)
+                if host:
+                    return host
+        hosts = await self.daemon.run_read_db(storage.top_hosts_for_prefix, prefix, 300, 1)
+        return hosts[0]["ip"] if hosts else None
+
     async def ban(self, target: str, attack_id: int | None = None, ttl_s: int | None = None,
                   origin: str = "flowguard", trigger_type: str = "manual") -> dict:
         try:
-            prefix = str(ipaddress.ip_network(target, strict=False))
+            net = ipaddress.ip_network(target, strict=False)
         except ValueError:
             return {"ok": False, "error": f"endereço/prefixo inválido: {target}"}
+
+        # RTBH só é aceito pelo roteador como host /32 (route-policy flowguard-import-v4
+        # no NE8000BGP, ip-prefix-list com "ge 32 le 32" — desenho herdado de FastNetMon,
+        # que sempre isola o host atacado, nunca o bloco inteiro do cliente). Anunciar um
+        # prefixo mais largo é rejeitado SILENCIOSAMENTE pelo roteador (achado real em
+        # produção: peer com "Received total routes: 0" mesmo com o FlowGuard anunciando
+        # certinho) — resolve sempre pro host /32 mais atacado antes de montar o anúncio.
+        if net.prefixlen != 32:
+            host = await self._resolve_rtbh_host(str(net), attack_id)
+            if not host:
+                return {"ok": False, "error": (
+                    f"RTBH exige um host /32 específico — não foi possível identificar "
+                    f"automaticamente qual host de {net} está sendo atacado (sem ataque "
+                    "associado ou sem tráfego recente); informe o host diretamente (ex: "
+                    "177.86.17.4/32)"
+                )}
+            net = ipaddress.ip_network(host)
+        prefix = str(net)
 
         bgp_cfg = self._bgp_cfg()
         community = bgp_cfg.get("rtbh_community")
@@ -191,24 +227,38 @@ class BgpManager:
         except ValueError:
             return {"ok": False, "error": f"endereço/prefixo inválido: {target}"}
 
-        resp = await self._send({
-            "action": "withdraw", "kind": "rtbh", "rule": {"dst_prefix": prefix},
-            "neighbor": self._peer_ip("main"),
-        })
-        if resp.get("ok"):
-            # captura attack_id/created_at ANTES de desativar — deactivate_flowspec_rules_by_prefix
-            # não devolve quais linhas afetou, e esse contexto alimenta o alerta abaixo
-            rules = await self.daemon.run_read_db(storage.list_active_flowspec_rules_by_prefix, prefix, "rtbh")
-            await self.daemon.run_db(storage.deactivate_flowspec_rules_by_prefix, self.daemon.conn, prefix, "rtbh")
-            LOG.info("RTBH retirado: %s", prefix)
-            for rule in rules:
+        # RTBH agora é sempre por host /32 (ver ban()) — quem chama unban tipicamente
+        # passa o prefixo do CLIENTE (ex: /24, vindo do portal/CLI), não o host exato
+        # que foi de fato anunciado; busca regras ativas DENTRO desse prefixo, não por
+        # igualdade exata de dst_prefix.
+        rules = await self.daemon.run_read_db(storage.list_active_flowspec_rules_within_prefix, prefix, "rtbh")
+        if not rules:
+            return {"ok": False, "error": f"nenhuma regra RTBH ativa encontrada em {prefix}"}
+
+        removed, failed, last_error = 0, 0, None
+        for rule in rules:
+            resp = await self._send({
+                "action": "withdraw", "kind": "rtbh", "rule": {"dst_prefix": rule["dst_prefix"]},
+                "neighbor": self._peer_ip("main"),
+            })
+            if resp.get("ok"):
+                await self.daemon.run_db(storage.deactivate_flowspec_rule, self.daemon.conn, rule["id"])
+                LOG.info("RTBH retirado: %s (regra id=%s)", rule["dst_prefix"], rule["id"])
+                removed += 1
                 self.daemon.fire_and_forget(
                     self.daemon.notify_mitigation_reverted(
-                        rule["id"], rule.get("attack_id"), prefix, "rtbh", "revertida manualmente", rule["created_at"]
+                        rule["id"], rule.get("attack_id"), rule["dst_prefix"], "rtbh",
+                        "revertida manualmente", rule["created_at"],
                     ),
                     f"alerta de mitigação revertida (regra {rule['id']})",
                 )
-        return resp
+            else:
+                failed += 1
+                last_error = resp.get("error")
+
+        if failed:
+            return {"ok": False, "removed": removed, "failed": failed, "error": last_error}
+        return {"ok": True, "removed": removed}
 
     async def flowspec_add(self, rule: dict, attack_id: int | None = None, ttl_s: int | None = None,
                             origin: str = "flowguard", peer: str = "main", trigger_type: str = "manual") -> dict:
@@ -274,8 +324,9 @@ class BgpManager:
     async def auto_mitigate(self, attack_id: int, attack_type: str, dst_prefix: str, auto_mode: str) -> dict:
         """Chamada pela engine de detecção (analyzer/engine.py) na abertura de um
         ataque, quando as duas travas de auto-mitigação estão ligadas (ver docstring
-        do módulo). auto_mode == "rtbh" espelha o botão manual "Mitigar" (bloqueio
-        total do prefixo, ignora o kind configurado); auto_mode == "suggestion"
+        do módulo). auto_mode == "rtbh" espelha o botão manual "Mitigar" (RTBH do
+        host /32 mais atacado dentro do prefixo — ver ban() —, ignora o kind
+        configurado); auto_mode == "suggestion"
         espelha o botão "Aplicar Sugestão" (usa mitigation_profiles — pode virar
         rtbh/discard/rate_limit dependendo do tipo). Só é chamada 1x por abertura de
         ataque (engine.py só passa por aqui em to_insert/to_notify, nunca em
