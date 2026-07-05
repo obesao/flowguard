@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.27.0**
+**Versão atual: v1.28.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,23 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.28.0 — 2026-07-04 — Indicador "atividade recente" no CLI (attacks/attack detail)
+Pedido do usuário: "ativo" sozinho não diz se o ataque está REALMENTE
+acontecendo agora — na prática, na maioria das vezes o registro segue
+marcado como ativo mesmo já sem tráfego real há um tempo (aguardando o
+fechamento automático por inatividade, que só age depois de horas — ver
+v1.26.0). Faltava uma forma rápida de diferenciar isso a olho.
+
+`flowguard-cli attacks`/`attacks --id` ganham a coluna/linha "Atividade",
+calculada a partir de `ts_last_seen` (já existente desde v1.26.0): 🟢 "em
+andamento" quando a última reconfirmação foi há menos de 90s (~3 ciclos de
+agregação de 30s, com folga), senão 🟡 "sem atividade há Xm/Xh". Só exibido
+pra ataques ainda ativos (`ts_end` nulo) — histórico mostra "-".
+
+Puramente de exibição no CLI, nenhuma mudança de schema/backend (o dado já
+existia). Contraparte no portal (mesmo cálculo) e no ClientGuard entram em
+commits próprios.
 
 ### v1.27.0 — 2026-07-04 — SYN flood: novo tipo de ataque dedicado
 Pedido do usuário: pesquisar como o FastNetMon detecta DDoS e trazer

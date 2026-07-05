@@ -176,6 +176,25 @@ def _fmt_mitigation_action(action: str | None) -> str:
     return "discard"
 
 
+# pedido do usuário: "ativo" sozinho não diz se está REALMENTE acontecendo
+# agora — um ataque fica "ativo" enquanto o atacante mandar tráfego (correto),
+# mas nada avisava quando isso já tinha parado há muito tempo e o registro só
+# ainda não fechou sozinho (ver close_stale_attacks, que fecha só depois de
+# horas sem reconfirmação). ts_last_seen é atualizado a cada ciclo em que o
+# ataque continua confirmado; janela "fresca" de 90s cobre ~3 ciclos de
+# agregação (30s padrão), com folga pra jitter.
+_ACTIVITY_FRESH_WINDOW_S = 90
+
+
+def _fmt_activity_freshness(ts_last_seen: int | None, row_open: bool) -> str:
+    if not row_open or not ts_last_seen:
+        return "-"
+    age_s = int(time.time()) - ts_last_seen
+    if age_s < _ACTIVITY_FRESH_WINDOW_S:
+        return "[green]🟢 em andamento[/green]"
+    return f"[yellow]🟡 sem atividade há {fmt_duration(age_s)}[/yellow]"
+
+
 def _fmt_attack_mitigation_cell(mitigation: dict | None, row_open: bool = False) -> str:
     if not mitigation:
         return "[dim]sem mitigação[/dim]"
@@ -203,12 +222,15 @@ def cmd_attacks(args: argparse.Namespace, sock_path: str) -> None:
     table.add_column("Tipo")
     table.add_column("Severidade")
     table.add_column("Pico")
+    table.add_column("Atividade")
     table.add_column("Mitigação")
     table.add_column("IA")
     for row in resp["attacks"]:
+        row_open = not row.get("ts_end")
         table.add_row(
             str(row["id"]), row["dst_prefix"], row["attack_type"], row["severity"],
-            fmt_bps(row["bps_peak"] or 0), _fmt_attack_mitigation_cell(row.get("mitigation"), not row.get("ts_end")),
+            fmt_bps(row["bps_peak"] or 0), _fmt_activity_freshness(row.get("ts_last_seen"), row_open),
+            _fmt_attack_mitigation_cell(row.get("mitigation"), row_open),
             "sim" if row.get("ai_analysis") else "-",
         )
     if not resp["attacks"]:
@@ -230,6 +252,7 @@ def cmd_attack_detail(attack_id: int, sock_path: str) -> None:
         f"Severidade: {attack['severity']}  |  Pico: {fmt_bps(attack['bps_peak'] or 0)}, "
         f"{attack['pps_peak'] or 0:,} pps\n"
         f"Status: {'encerrado' if attack['ts_end'] else '[red]ativo[/red]'}"
+        f"{'  |  Atividade: ' + _fmt_activity_freshness(attack.get('ts_last_seen'), not attack['ts_end']) if not attack['ts_end'] else ''}"
         f"{'  |  Alvo (host): ' + attack['target_host'] if attack.get('target_host') else ''}\n"
         f"Mitigação: {_fmt_attack_mitigation_cell(attack.get('mitigation'), not attack.get('ts_end'))}\n"
         f"Duração: {fmt_duration(summary.get('duration_s', 0))}  |  "
