@@ -32,6 +32,18 @@ class FakeDaemon:
     async def run_read_db(self, func, *args, **kwargs):
         return func(self.conn, *args, **kwargs)
 
+    def fire_and_forget(self, coro, what):
+        # testes deste nível checam retorno/estado no banco, não o conteúdo dos
+        # alertas — fecha a corrotina sem executá-la pra não vazar warning de
+        # "coroutine never awaited"
+        coro.close()
+
+    async def notify_mitigation_applied(self, *args, **kwargs):
+        return None
+
+    async def notify_mitigation_reverted(self, *args, **kwargs):
+        return None
+
 
 def _insert_attack(conn, dst_prefix="177.86.16.0/24", attack_type="ddos_volumetrico"):
     now = int(time.time())

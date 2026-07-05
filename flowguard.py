@@ -32,6 +32,31 @@ LOG = logging.getLogger("flowguard")
 
 DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parent / "config.yaml")
 
+# rótulo amigável da ação de mitigação pros alertas de WhatsApp — chaves espelham
+# flowspec_rules.action (ver bgp/manager.py e bgp/flowspec.suggest_mitigation)
+MITIGATION_ACTION_LABELS = {
+    "rtbh": "Blackhole (RTBH) — descarte total do prefixo na borda",
+    "discard": "Descarte seletivo (FlowSpec)",
+    "rate_limit": "Limitação de taxa (FlowSpec)",
+}
+
+
+def _fmt_dt(ts: int | None) -> str:
+    if not ts:
+        return "?"
+    return time.strftime("%d/%m %H:%M", time.localtime(ts))
+
+
+def _fmt_duration(seconds: int | None) -> str:
+    if not seconds or seconds < 0:
+        return "0min"
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, _s = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}min" if m else f"{h}h"
+    return f"{m}min" if m else f"{seconds}s"
+
 # Portas de destino a partir daqui são efêmeras (escolhidas aleatoriamente pelo lado
 # cliente da conexão) — individualmente não caracterizam nada, mas como chave de
 # agregação explodem a cardinalidade de flow_aggs: medido em produção, ~65 mil portas
@@ -184,15 +209,24 @@ class FlowGuardDaemon:
             LOG.warning("falha ao enviar alerta WhatsApp")
 
     async def notify_attack(self, attack_id: int, prefix: str, attack_type: str, severity: str,
-                             bps: int, pps: int, entry: dict) -> None:
+                             bps: int, pps: int, entry: dict, ts_start: int) -> None:
         alerts_cfg = self.config.get("alerts", {})
 
+        # host /32 mais atacado NO MOMENTO da abertura — ts_start é o timestamp do
+        # próprio ciclo que disparou o ataque, então a janela (ts_start, ts_start)
+        # cai exatamente na linha de flow_aggs recém-gravada por esse ciclo (ver
+        # storage.attack_top_host/attack_detail). Só existe para prefixos
+        # protegidos de verdade (não /24 de fallback) — ver flowguard.py::_aggregate_once.
+        target_host = await self.run_read_db(storage.attack_top_host, prefix, ts_start, None)
         ai_analysis = await self._maybe_analyze_attack(attack_id, prefix, attack_type, severity, bps, pps, entry)
 
         if self._wa_severity_ok(severity):
+            host_line = f"{target_host} (prefixo {prefix})" if target_host else f"prefixo {prefix} inteiro (host específico não identificado ainda)"
             message = (
-                f"🚨 FlowGuard: ataque {attack_type} em {prefix}"
-                + (f" ({entry['customer']})" if entry.get("customer") else "")
+                f"🚨 FlowGuard: ataque {attack_type}"
+                + (f" — {entry['customer']}" if entry.get("customer") else "")
+                + f"\nHost: {host_line}"
+                + f"\nInício: {_fmt_dt(ts_start)}"
                 + f"\n{bps / 1e6:.1f} Mbps, {pps:,} pps — severidade {severity}".replace(",", ".")
                 + (f"\nAnálise: {ai_analysis}" if ai_analysis else "")
             )
@@ -201,8 +235,9 @@ class FlowGuardDaemon:
         webhook_url = alerts_cfg.get("webhook_url")
         if webhook_url:
             payload = {
-                "attack_id": attack_id, "dst_prefix": prefix, "attack_type": attack_type, "severity": severity,
-                "bps": bps, "pps": pps, "customer": entry.get("customer", ""), "ai_analysis": ai_analysis,
+                "attack_id": attack_id, "dst_prefix": prefix, "target_host": target_host,
+                "attack_type": attack_type, "severity": severity, "bps": bps, "pps": pps,
+                "customer": entry.get("customer", ""), "ai_analysis": ai_analysis, "ts_start": ts_start,
             }
             try:
                 async with aiohttp.ClientSession() as session:
@@ -211,10 +246,76 @@ class FlowGuardDaemon:
                 LOG.exception("falha ao enviar webhook de alerta para %s", webhook_url)
 
     async def notify_attack_closed(self, attack_id: int, prefix: str, attack_type: str, severity: str,
-                                    bps_peak: int) -> None:
+                                    bps_peak: int, ts_start: int, ts_end: int, target_host: str | None = None) -> None:
         if not self._wa_severity_ok(severity):
             return
-        message = f"✅ FlowGuard: ataque {attack_type} em {prefix} encerrado (pico {bps_peak / 1e6:.1f} Mbps)"
+        host_line = f"{target_host} (prefixo {prefix})" if target_host else f"prefixo {prefix}"
+        message = (
+            f"✅ FlowGuard: ataque {attack_type} encerrado"
+            + f"\nHost: {host_line}"
+            + f"\nInício: {_fmt_dt(ts_start)} — Fim: {_fmt_dt(ts_end)} (durou {_fmt_duration(ts_end - ts_start)})"
+            + f"\nPico: {bps_peak / 1e6:.1f} Mbps"
+        )
+        await self._send_whatsapp(message)
+
+    async def _mitigation_wa_ok(self, attack_id: int | None) -> tuple[bool, dict | None]:
+        """Mesmo filtro de severidade (alerts.min_severity_wa) do alerta de ataque,
+        aplicado à severidade do ataque associado à mitigação. Sem attack_id (bloqueio
+        manual avulso, não ligado a um ataque detectado) sempre libera — é uma ação
+        deliberada do operador, não um evento que faça sentido filtrar por severidade."""
+        if not self.config.get("alerts", {}).get("whatsapp"):
+            return False, None
+        if attack_id is None:
+            return True, None
+        attack = await self.run_read_db(storage.get_attack, attack_id)
+        if attack and not self._wa_severity_ok(attack["severity"]):
+            return False, attack
+        return True, attack
+
+    async def notify_mitigation_applied(self, rule_id: int, attack_id: int | None, dst_prefix: str,
+                                         action: str, trigger_type: str, ttl_s: int | None) -> None:
+        ok, attack = await self._mitigation_wa_ok(attack_id)
+        if not ok:
+            return
+        attack_type = attack["attack_type"] if attack else None
+        target_host = attack.get("target_host") if attack else None
+        if not target_host and attack:
+            # attacks.target_host só é calculado no FECHAMENTO do ataque (ver
+            # storage.apply_attack_changes) — na abertura, quando a auto-mitigação
+            # dispara, ainda não existe; recalcula ao vivo pra não perder o host exato.
+            target_host = await self.run_read_db(storage.attack_top_host, dst_prefix, attack["ts_start"], None)
+        host_line = target_host or dst_prefix
+        action_label = MITIGATION_ACTION_LABELS.get(action, action)
+        origin_label = "automática" if trigger_type == "auto" else "manual"
+        message = (
+            "🛡️ FlowGuard: mitigação aplicada"
+            + (f" — ataque {attack_type}" if attack_type else "")
+            + f"\nHost/prefixo: {host_line}"
+            + f"\nAção: {action_label} ({origin_label})"
+            + f"\nInício: {_fmt_dt(int(time.time()))}"
+            + (f"\nVálida por até {_fmt_duration(ttl_s)} (ou até reversão manual)" if ttl_s else "")
+        )
+        await self._send_whatsapp(message)
+
+    async def notify_mitigation_reverted(self, rule_id: int, attack_id: int | None, dst_prefix: str,
+                                          action: str, reason: str, applied_at: int | None) -> None:
+        ok, attack = await self._mitigation_wa_ok(attack_id)
+        if not ok:
+            return
+        attack_type = attack["attack_type"] if attack else None
+        target_host = attack.get("target_host") if attack else None
+        host_line = target_host or dst_prefix
+        action_label = MITIGATION_ACTION_LABELS.get(action, action)
+        now = int(time.time())
+        duration_line = f"\nDuração da mitigação: {_fmt_duration(now - applied_at)}" if applied_at else ""
+        message = (
+            "✅ FlowGuard: mitigação encerrada"
+            + (f" — ataque {attack_type}" if attack_type else "")
+            + f"\nHost/prefixo: {host_line}"
+            + f"\nAção revertida: {action_label}"
+            + f"\nEncerrada: {_fmt_dt(now)} ({reason})"
+            + duration_line
+        )
         await self._send_whatsapp(message)
 
     async def _maybe_analyze_attack(self, attack_id: int, prefix: str, attack_type: str, severity: str,
@@ -320,7 +421,10 @@ class FlowGuardDaemon:
                 row["id"], row["attack_type"], row["dst_prefix"], stale_s,
             )
             self.fire_and_forget(
-                self.notify_attack_closed(row["id"], row["dst_prefix"], row["attack_type"], row["severity"], row["bps_peak"] or 0),
+                self.notify_attack_closed(
+                    row["id"], row["dst_prefix"], row["attack_type"], row["severity"], row["bps_peak"] or 0,
+                    row["ts_start"], row["ts_end"], row["target_host"],
+                ),
                 f"ataque #{row['id']} encerrado (inatividade)",
             )
 

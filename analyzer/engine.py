@@ -190,13 +190,13 @@ class DetectionEngine:
         # rede (análise IA, WhatsApp, webhook) com timeouts de vários segundos, e este
         # método roda dentro do ciclo de agregação — esperar N notificações em série
         # atrasaria o ciclo e transbordaria a fila de flows bem no meio de um ataque.
-        for attack_id, (prefix, attack_type, severity, bps, pps, entry) in zip(inserted_ids, to_notify):
+        for attack_id, (prefix, attack_type, severity, bps, pps, entry, ts_start) in zip(inserted_ids, to_notify):
             LOG.warning(
                 "ATAQUE DETECTADO: %s em %s (%s) — %.1f Mbps, %s pps",
                 attack_type, prefix, entry.get("customer") or "?", bps / 1e6, f"{pps:,}".replace(",", "."),
             )
             self.daemon.fire_and_forget(
-                self.daemon.notify_attack(attack_id, prefix, attack_type, severity, bps, pps, entry),
+                self.daemon.notify_attack(attack_id, prefix, attack_type, severity, bps, pps, entry, ts_start),
                 f"ataque #{attack_id} detectado",
             )
 
@@ -211,10 +211,17 @@ class DetectionEngine:
                     f"mitigação automática do ataque #{attack_id}",
                 )
 
-        for attack_id, prefix, attack_type, severity, bps_peak in to_close_log(to_close, open_attacks):
+        for attack_id, prefix, attack_type, severity, bps_peak, ts_start, ts_end in to_close_log(to_close, open_attacks):
+            # target_host só fica disponível depois de apply_attack_changes calcular e
+            # gravar em attacks.target_host (ver storage.attack_top_host) — recarrega
+            # a linha em vez de recalcular a agregação de novo aqui.
+            attack_row = await self.daemon.run_read_db(storage.get_attack, attack_id)
+            target_host = attack_row.get("target_host") if attack_row else None
             LOG.info("ataque encerrado: %s em %s (pico %.1f Mbps)", attack_type, prefix, bps_peak / 1e6)
             self.daemon.fire_and_forget(
-                self.daemon.notify_attack_closed(attack_id, prefix, attack_type, severity, bps_peak),
+                self.daemon.notify_attack_closed(
+                    attack_id, prefix, attack_type, severity, bps_peak, ts_start, ts_end, target_host
+                ),
                 f"ataque #{attack_id} encerrado",
             )
 
@@ -233,7 +240,7 @@ class DetectionEngine:
                         "ts_start": now, "dst_prefix": prefix, "customer": entry.get("customer", ""),
                         "attack_type": attack_type, "severity": severity, "bps_peak": bps, "pps_peak": pps,
                     })
-                    to_notify.append((prefix, attack_type, severity, bps, pps, entry))
+                    to_notify.append((prefix, attack_type, severity, bps, pps, entry, now))
         else:
             self._pending.pop(key, None)
             if existing:
@@ -242,10 +249,10 @@ class DetectionEngine:
 
 def to_close_log(to_close: list[tuple], open_attacks: dict[tuple, dict]):
     by_id = {row["id"]: key for key, row in open_attacks.items()}
-    for attack_id, _ts_end, _dst_prefix, _ts_start in to_close:
+    for attack_id, ts_end, _dst_prefix, ts_start in to_close:
         key = by_id.get(attack_id)
         if key is None:
             continue
         prefix, attack_type = key
         row = open_attacks[key]
-        yield attack_id, prefix, attack_type, row["severity"], row["bps_peak"]
+        yield attack_id, prefix, attack_type, row["severity"], row["bps_peak"], ts_start, ts_end

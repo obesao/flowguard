@@ -178,6 +178,10 @@ class BgpManager:
         })
         if attack_id is not None:
             await self.daemon.run_db(storage.mark_attack_mitigated, self.daemon.conn, attack_id)
+        self.daemon.fire_and_forget(
+            self.daemon.notify_mitigation_applied(rule_id, attack_id, prefix, "rtbh", trigger_type, ttl_s),
+            f"alerta de mitigação aplicada (regra {rule_id})",
+        )
         LOG.warning("RTBH anunciado: %s (regra id=%s, ttl=%ds)", prefix, rule_id, ttl_s)
         return {"ok": True, "rule_id": rule_id}
 
@@ -192,8 +196,18 @@ class BgpManager:
             "neighbor": self._peer_ip("main"),
         })
         if resp.get("ok"):
+            # captura attack_id/created_at ANTES de desativar — deactivate_flowspec_rules_by_prefix
+            # não devolve quais linhas afetou, e esse contexto alimenta o alerta abaixo
+            rules = await self.daemon.run_read_db(storage.list_active_flowspec_rules_by_prefix, prefix, "rtbh")
             await self.daemon.run_db(storage.deactivate_flowspec_rules_by_prefix, self.daemon.conn, prefix, "rtbh")
             LOG.info("RTBH retirado: %s", prefix)
+            for rule in rules:
+                self.daemon.fire_and_forget(
+                    self.daemon.notify_mitigation_reverted(
+                        rule["id"], rule.get("attack_id"), prefix, "rtbh", "revertida manualmente", rule["created_at"]
+                    ),
+                    f"alerta de mitigação revertida (regra {rule['id']})",
+                )
         return resp
 
     async def flowspec_add(self, rule: dict, attack_id: int | None = None, ttl_s: int | None = None,
@@ -223,6 +237,10 @@ class BgpManager:
         rule_id = await self.daemon.run_db(storage.insert_flowspec_rule, self.daemon.conn, row)
         if attack_id is not None:
             await self.daemon.run_db(storage.mark_attack_mitigated, self.daemon.conn, attack_id)
+        self.daemon.fire_and_forget(
+            self.daemon.notify_mitigation_applied(rule_id, attack_id, rule.get("dst_prefix"), rule["action"], trigger_type, ttl_s),
+            f"alerta de mitigação aplicada (regra {rule_id})",
+        )
         LOG.warning("FlowSpec anunciado pro peer '%s': %s (regra id=%s, ttl=%ds)", peer, rule, rule_id, ttl_s)
         return {"ok": True, "rule_id": rule_id}
 
@@ -239,6 +257,13 @@ class BgpManager:
         if resp.get("ok"):
             await self.daemon.run_db(storage.deactivate_flowspec_rule, self.daemon.conn, rule_id)
             LOG.info("regra retirada manualmente: id=%s %s", rule_id, row.get("dst_prefix"))
+            self.daemon.fire_and_forget(
+                self.daemon.notify_mitigation_reverted(
+                    rule_id, row.get("attack_id"), row.get("dst_prefix"), row["action"],
+                    "revertida manualmente", row["created_at"],
+                ),
+                f"alerta de mitigação revertida (regra {rule_id})",
+            )
         return resp
 
     async def auto_mitigate(self, attack_id: int, attack_type: str, dst_prefix: str, auto_mode: str) -> dict:
@@ -279,6 +304,13 @@ class BgpManager:
             if resp.get("ok"):
                 await self.daemon.run_db(storage.deactivate_flowspec_rule, self.daemon.conn, row["id"])
                 LOG.info("regra expirada e retirada: id=%s %s (%s)", row["id"], row.get("dst_prefix"), row["action"])
+                self.daemon.fire_and_forget(
+                    self.daemon.notify_mitigation_reverted(
+                        row["id"], row.get("attack_id"), row.get("dst_prefix"), row["action"],
+                        "TTL expirado", row["created_at"],
+                    ),
+                    f"alerta de mitigação revertida (regra {row['id']})",
+                )
             else:
                 LOG.error("falha ao retirar regra expirada id=%s: %s", row["id"], resp.get("error"))
 
@@ -288,7 +320,12 @@ class BgpManager:
         banco só as que confirmaram a retirada de verdade — uma falha de withdraw não
         pode apagar o rastro local de uma regra que continua anunciada no roteador
         (mesma classe de bug encontrada e corrigida no ClientGuard: status local
-        dessincronizado do estado real da regra na borda)."""
+        dessincronizado do estado real da regra na borda).
+
+        Deliberadamente NÃO dispara notify_mitigation_reverted por regra: isso roda
+        toda vez que o daemon reinicia (deploy normal) e no botão de limpeza em massa
+        do portal — mandar 1 WhatsApp por regra ativa nesses casos seria spam, não
+        um alerta de segurança de verdade."""
         try:
             rows = await self.daemon.run_read_db(storage.list_flowspec_rules, active_only=True)
         except Exception:

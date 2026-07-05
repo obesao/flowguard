@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.29.0**
+**Versão atual: v1.30.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,49 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.30.0 — 2026-07-05 — Alerta de WhatsApp mostra o host exato, horários e a ação de mitigação
+Pedido do usuário: o alerta de ataque só mostrava o prefixo/bloco inteiro
+(ex: `x.x.x.0/24`), nunca o host `/32` de fato sendo atacado, e não dizia
+nada sobre a ação de segurança tomada (RTBH/blackhole, FlowSpec) nem quando
+ela começou/terminou.
+
+**Mensagens de ataque enriquecidas** (`notify_attack`/`notify_attack_closed`
+em `flowguard.py`):
+- **Host exato** — abertura calcula o host `/32` mais atacado NO MOMENTO via
+  `storage.attack_top_host` (mesma função já usada pro fechamento, só que
+  aplicada à janela do próprio ciclo que disparou o ataque); fechamento usa o
+  `attacks.target_host` já persistido. Sem host identificado (prefixo sem
+  granularidade `/32`, ex: `/24` de fallback), cai pro prefixo com um aviso
+  explícito em vez de fingir precisão que não existe.
+- **Horários** — abertura mostra "Início: dd/mm HH:MM"; fechamento mostra
+  início, fim e duração formatada (`1h02min`, etc).
+
+**Novo par de alertas — mitigação aplicada/revertida** (`notify_mitigation_applied`/
+`notify_mitigation_reverted`, disparados de dentro de `bgp/manager.py`:
+`ban`/`flowspec_add` no apply, `unban`/`flowspec_del`/`expire_cycle` na
+reversão): mensagens PRÓPRIAS e imediatas no momento em que a ação de
+segurança de fato acontece, decoplado do ciclo de vida do ataque — RTBH TTL
+padrão é 1h, mas pode ficar ativo bem depois do ataque já ter fechado, e uma
+mitigação manual pode ser aplicada minutos depois da abertura. Mostram: host
+exato (recalculado ao vivo se o ataque ainda não fechou e `target_host` ainda
+não foi persistido), ação tomada com rótulo amigável ("Blackhole (RTBH) —
+descarte total do prefixo na borda", "Descarte seletivo (FlowSpec)",
+"Limitação de taxa (FlowSpec)"), se foi automática ou manual, e — na
+reversão — o motivo ("TTL expirado" vs "revertida manualmente") e a duração
+total da mitigação. Cobre tanto ações automáticas quanto manuais do
+operador (portal/CLI) — é uma ação real na borda, vale saber sempre,
+independente de quem disparou. Respeita o mesmo filtro `min_severity_wa` já
+usado pros alertas de ataque (baseado na severidade do ataque associado);
+sem ataque associado (bloqueio manual avulso de um IP) sempre notifica, já
+que é uma ação deliberada do operador. Deliberadamente NÃO dispara em
+`withdraw_all` (shutdown do daemon / botão "Apagar todas as regras") — viraria
+spam a cada deploy.
+
+17 testes novos (`tests/test_wa_notifications.py`) cobrindo conteúdo das 4
+mensagens, fallback sem host identificado, filtro de severidade, e a
+integração ponta a ponta com `BgpManager` (ban/unban/flowspec_add/flowspec_del/
+expire_cycle disparando o alerta certo com os argumentos certos).
 
 ### v1.29.0 — 2026-07-05 — "sem proteção" não aparece mais pra ataque que já parou de verdade
 Pedido do usuário: mesmo com o indicador de atividade da v1.28.0, o selo de

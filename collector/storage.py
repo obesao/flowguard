@@ -351,6 +351,18 @@ def deactivate_flowspec_rules_by_prefix(conn: sqlite3.Connection, prefix: str, a
     conn.commit()
 
 
+def list_active_flowspec_rules_by_prefix(conn: sqlite3.Connection, prefix: str, action: str) -> list[dict]:
+    """Usado por BgpManager.unban pra capturar attack_id/created_at das regras ANTES
+    de desativá-las por prefixo — deactivate_flowspec_rules_by_prefix não devolve
+    quais linhas afetou, e esse contexto é o que alimenta o alerta de WhatsApp de
+    mitigação revertida."""
+    rows = conn.execute(
+        "SELECT * FROM flowspec_rules WHERE dst_prefix = ? AND action = ? AND active = 1",
+        (prefix, action),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_expired_flowspec_rules(conn: sqlite3.Connection, now: int) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM flowspec_rules WHERE active = 1 AND expires_at <= ?", (now,)
