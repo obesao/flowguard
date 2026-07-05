@@ -592,6 +592,71 @@ def test_engine_does_not_auto_mitigate_when_type_auto_mode_is_off(tmp_path):
     assert daemon.bgp_manager.calls == []
 
 
+# --- resolução de limiar por template (protected_prefixes.yaml::template ->
+# detection_templates.yaml) — ver analyzer/engine.py::evaluate_cycle -----------
+
+def _cfg_with_template(template=None, thresholds=None, templates=None):
+    cfg = _base_cfg()
+    cfg["detection"]["ddos_bps_threshold"] = 1000  # global baixo, pra o template/threshold vencerem
+    cfg["detection"]["ddos_pps_threshold"] = 10_000  # alto o bastante pra não disparar sozinho (OR com bps)
+    entry = cfg["protected_prefixes"][0]
+    if template:
+        entry["template"] = template
+    if thresholds:
+        entry["thresholds"] = thresholds
+    cfg["detection_templates"] = templates or {}
+    return cfg
+
+
+def test_engine_suppresses_detection_below_template_threshold(tmp_path):
+    # tráfego de 2000bps ultrapassa o global (1000) mas fica abaixo do template
+    # 'cgnat' (5000) — não deve abrir ataque
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    cfg = _cfg_with_template(template="cgnat", templates={"cgnat": {"ddos_bps_threshold": 5000}})
+    daemon = EngineFakeDaemon(conn, cfg)
+    engine = DetectionEngine(daemon)
+
+    asyncio.run(_run_cycle(engine, daemon))
+    assert daemon.bgp_manager.calls == []
+
+
+def test_engine_detects_above_template_threshold(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    cfg = _cfg_with_template(template="cgnat", templates={"cgnat": {"ddos_bps_threshold": 1500}})
+    daemon = EngineFakeDaemon(conn, cfg)
+    engine = DetectionEngine(daemon)
+
+    asyncio.run(_run_cycle(engine, daemon))
+    assert len(daemon.bgp_manager.calls) == 1
+
+
+def test_engine_explicit_thresholds_win_over_template(tmp_path):
+    # thresholds explícito (5000) > template (1500) — tráfego de 2000bps fica
+    # abaixo do explícito, não deve abrir ataque mesmo com o template mais baixo
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    cfg = _cfg_with_template(
+        template="cgnat", thresholds={"ddos_bps_threshold": 5000},
+        templates={"cgnat": {"ddos_bps_threshold": 1500}},
+    )
+    daemon = EngineFakeDaemon(conn, cfg)
+    engine = DetectionEngine(daemon)
+
+    asyncio.run(_run_cycle(engine, daemon))
+    assert daemon.bgp_manager.calls == []
+
+
+def test_engine_unknown_template_falls_back_to_global(tmp_path):
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    cfg = _cfg_with_template(template="nao_existe", templates={})
+    daemon = EngineFakeDaemon(conn, cfg)
+    engine = DetectionEngine(daemon)
+
+    # tráfego de 2000bps > global (1000) -> abre normalmente, sem erro por
+    # template desconhecido
+    asyncio.run(_run_cycle(engine, daemon))
+    assert len(daemon.bgp_manager.calls) == 1
+
+
 # --- engine: syn_flood (proporção de SYN puro / TCP total, com piso de volume) ---
 # proto_totals aqui usa a chave real do protocolo (6 = TCP), diferente do "tcp"
 # ilustrativo usado nos testes de ddos_volumetrico acima — o volumétrico soma

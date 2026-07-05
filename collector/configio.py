@@ -15,6 +15,8 @@ DEFAULT_PROTECTED_PREFIXES_FILE = "/root/flowguard/protected_prefixes.yaml"
 DEFAULT_WHITELIST_FILE = "/root/flowguard/whitelist.yaml"
 DEFAULT_DETECTION_TOGGLES_FILE = "/root/flowguard/detection_toggles.yaml"
 DEFAULT_MITIGATION_PROFILES_FILE = "/root/flowguard/mitigation_profiles.yaml"
+DEFAULT_DETECTION_TEMPLATES_FILE = "/root/flowguard/detection_templates.yaml"
+DEFAULT_DETECTION_OVERRIDES_FILE = "/root/flowguard/detection_overrides.yaml"
 
 
 def load_config(path: str) -> dict:
@@ -25,16 +27,26 @@ def load_config(path: str) -> dict:
     wl_path = cfg.get("whitelist_file", DEFAULT_WHITELIST_FILE)
     dt_path = cfg.get("detection_toggles_file", DEFAULT_DETECTION_TOGGLES_FILE)
     mp_path = cfg.get("mitigation_profiles_file", DEFAULT_MITIGATION_PROFILES_FILE)
+    dtpl_path = cfg.get("detection_templates_file", DEFAULT_DETECTION_TEMPLATES_FILE)
+    dov_path = cfg.get("detection_overrides_file", DEFAULT_DETECTION_OVERRIDES_FILE)
 
     cfg["protected_prefixes"] = load_yaml_list(pp_path)
     cfg["whitelist"] = load_yaml_list(wl_path)
     cfg["detection_toggles"] = load_feature_toggles(dt_path)
     cfg["mitigation_profiles"] = load_mitigation_profiles(mp_path)
+    cfg["detection_templates"] = load_detection_templates(dtpl_path)
+    # ajuste fino via portal/CLI, aplicado por cima do detection.* já presente no
+    # config.yaml — reload_config() do daemon recarrega load_config() inteiro do
+    # zero, então isso aplica automaticamente sem precisar de nenhum estado extra
+    # (diferente do ClientGuard, cujo reload não relê o config.yaml principal).
+    cfg["detection"] = {**(cfg.get("detection") or {}), **load_detection_overrides(dov_path)}
     # caminhos resolvidos, para quem precisar editar os arquivos (ex: whitelist add/del)
     cfg["_protected_prefixes_file"] = pp_path
     cfg["_whitelist_file"] = wl_path
     cfg["_detection_toggles_file"] = dt_path
     cfg["_mitigation_profiles_file"] = mp_path
+    cfg["_detection_templates_file"] = dtpl_path
+    cfg["_detection_overrides_file"] = dov_path
     return cfg
 
 
@@ -259,5 +271,124 @@ def save_mitigation_profiles(path: str, changes: dict) -> dict:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(MITIGATION_PROFILES_HEADER.rstrip() + "\n")
+        yaml.safe_dump(current, fh, sort_keys=False, allow_unicode=True)
+    return current
+
+
+# --- detection_templates.yaml: perfis de limiar reutilizáveis por tipo de rede -----
+# Associado a um prefixo via `template:` em protected_prefixes.yaml — mesma ideia do
+# ClientGuard (ver customers.yaml/detection_templates.yaml de lá), aplicada aqui aos
+# limiares de DDoS volumétrico/amplificação (analyzer/engine.py resolve: thresholds
+# explícito do prefixo > template > detection.* global de config.yaml).
+DETECTION_TEMPLATES_HEADER = (
+    "# detection_templates.yaml — perfis de limiar de detecção reutilizáveis por tipo de\n"
+    "# rede/prefixo, associados via `template:` em protected_prefixes.yaml. Evita\n"
+    "# recalibrar os mesmos números pra cada prefixo novo do mesmo perfil (ex.: pool CGNAT,\n"
+    "# onde o tráfego agregado de muitos clientes combinados exige limiar bem mais alto que\n"
+    "# um cliente único). Editável via portal (aba Configuração > FlowGuard) ou\n"
+    "# flowguard-cli detection templates set|del.\n"
+    "#\n"
+    "# Ordem de precedência (do mais específico pro mais genérico): thresholds explícito\n"
+    "# em protected_prefixes.yaml > template > detection.* em config.yaml (usado por\n"
+    "# qualquer prefixo sem thresholds/template)."
+)
+# mesmas chaves que protected_prefixes.yaml::thresholds já suporta (ver
+# analyzer/engine.py) — um template é só uma forma reutilizável de definir as duas.
+DETECTION_TEMPLATE_KEYS = {"ddos_bps_threshold", "ddos_pps_threshold"}
+
+
+def load_detection_templates(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except FileNotFoundError:
+        return {}
+    return data or {}
+
+
+def save_detection_template(path: str, name: str, values: dict, description: str = "") -> dict:
+    """Cria ou substitui (nome já existente = sobrescreve) um template inteiro — não é
+    merge parcial de campos, pra não deixar uma chave antiga órfã se o operador trocar
+    de ideia sobre o que o template define."""
+    if not name or not name.replace("_", "").replace("-", "").isalnum() or name != name.lower():
+        raise ValueError("nome do template deve ser minúsculo, só letras/números/_/-")
+    unknown = sorted(k for k in values if k not in DETECTION_TEMPLATE_KEYS)
+    if unknown:
+        raise ValueError(f"campo(s) desconhecido(s) no template: {', '.join(unknown)}")
+    for key, val in values.items():
+        if not isinstance(val, int) or isinstance(val, bool) or val <= 0:
+            raise ValueError(f"{key} deve ser um inteiro positivo")
+    current = load_detection_templates(path)
+    entry = dict(values)
+    if description:
+        entry["description"] = description
+    elif name in current and current[name].get("description"):
+        entry["description"] = current[name]["description"]  # preserva descrição existente
+    current[name] = entry
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(DETECTION_TEMPLATES_HEADER.rstrip() + "\n")
+        yaml.safe_dump(current, fh, sort_keys=False, allow_unicode=True)
+    return current
+
+
+def delete_detection_template(path: str, name: str) -> dict:
+    current = load_detection_templates(path)
+    if name not in current:
+        raise ValueError(f"template '{name}' não existe")
+    del current[name]
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(DETECTION_TEMPLATES_HEADER.rstrip() + "\n")
+        yaml.safe_dump(current, fh, sort_keys=False, allow_unicode=True)
+    return current
+
+
+# --- detection_overrides.yaml: ajuste fino dos limiares de config.yaml::detection ---
+# via portal/CLI, sem tocar no config.yaml principal (mesmo motivo de
+# protected_prefixes/whitelist/toggles: editar via portal não pode reescrever, e
+# perder os comentários de, o config.yaml). reload_config() do daemon já relê
+# config.yaml inteiro a cada chamada, então isso aplica sem reiniciar o daemon.
+DETECTION_OVERRIDES_HEADER = (
+    "# detection_overrides.yaml — ajuste fino dos limiares de detection.* em\n"
+    "# config.yaml, aplicado por cima a cada carga/reload (sem reiniciar o daemon).\n"
+    "# Editável via portal (aba Configuração > FlowGuard) ou\n"
+    "# flowguard-cli detection set. Vazio = usa os valores de config.yaml sem ajuste."
+)
+DETECTION_TUNABLE_KEYS = {
+    "ddos_bps_threshold", "ddos_pps_threshold", "syn_ratio_threshold", "syn_min_pps_floor",
+    "dns_amp_factor", "scan_ports_per_sec", "scan_hosts_per_sec", "min_attack_duration_s",
+    "attack_stale_close_s", "baseline_min_duration_s", "window_short_s", "window_long_s",
+    "baseline_enabled", "baseline_window_minutes", "baseline_min_samples", "baseline_sigma",
+    "baseline_min_bps",
+}
+
+
+def load_detection_overrides(path: str) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except FileNotFoundError:
+        return {}
+    data = data or {}
+    return {k: v for k, v in data.items() if k in DETECTION_TUNABLE_KEYS}
+
+
+def save_detection_overrides(path: str, changes: dict) -> dict:
+    """Read-modify-write atômico (mesmo padrão de save_feature_toggles) — aplica todas
+    as mudanças pendentes numa leitura+escrita só. Passar valor None pra uma chave
+    REMOVE o override (volta a usar o valor de config.yaml), não grava null."""
+    unknown = sorted(k for k in changes if k not in DETECTION_TUNABLE_KEYS)
+    if unknown:
+        raise ValueError(f"limiar(es) desconhecido(s): {', '.join(unknown)}")
+    current = load_detection_overrides(path)
+    for key, value in changes.items():
+        if value is None:
+            current.pop(key, None)
+        else:
+            current[key] = value
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(DETECTION_OVERRIDES_HEADER.rstrip() + "\n")
         yaml.safe_dump(current, fh, sort_keys=False, allow_unicode=True)
     return current

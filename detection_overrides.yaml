@@ -1,0 +1,5 @@
+# detection_overrides.yaml — ajuste fino dos limiares de detection.* em
+# config.yaml, aplicado por cima a cada carga/reload (sem reiniciar o daemon).
+# Editável via portal (aba Configuração > FlowGuard) ou
+# flowguard-cli detection set. Vazio = usa os valores de config.yaml sem ajuste.
+{}

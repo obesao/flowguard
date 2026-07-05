@@ -68,6 +68,7 @@ class DetectionEngine:
         whitelist = cfg.get("whitelist", [])
         toggles = cfg.get("detection_toggles", {})
         mitigation_profiles = cfg.get("mitigation_profiles", {})
+        detection_templates = cfg.get("detection_templates", {})
 
         def toggle_on(key: str) -> bool:
             return toggles.get(key, True)
@@ -107,9 +108,14 @@ class DetectionEngine:
             if not prefix or _is_whitelisted(prefix, whitelist):
                 continue
 
+            # resolução do limiar: thresholds explícito do prefixo > template
+            # (protected_prefixes.yaml::template -> detection_templates.yaml, ex.
+            # 'cgnat' pra pool com tráfego agregado de muitos clientes combinados) >
+            # padrão global de detection.* em config.yaml.
+            template_vals = detection_templates.get(entry.get("template"), {}) if entry.get("template") else {}
             overrides = entry.get("thresholds") or {}
-            bps_threshold = overrides.get("ddos_bps_threshold", default_bps_threshold)
-            pps_threshold = overrides.get("ddos_pps_threshold", default_pps_threshold)
+            bps_threshold = overrides.get("ddos_bps_threshold", template_vals.get("ddos_bps_threshold", default_bps_threshold))
+            pps_threshold = overrides.get("ddos_pps_threshold", template_vals.get("ddos_pps_threshold", default_pps_threshold))
 
             by_proto = proto_totals.get(prefix, {})
             total_bps = sum(v["bps"] for v in by_proto.values())

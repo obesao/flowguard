@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.31.0**
+**Versão atual: v1.32.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,42 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.32.0 — 2026-07-05 — Templates e ajuste fino de detecção via portal (replica o mecanismo do ClientGuard)
+Pedido do usuário: trazer pro FlowGuard o mesmo sistema de templates +
+ajuste fino de limiares já construído (e validado em produção) do lado do
+ClientGuard.
+
+**Templates de detecção** (`detection_templates.yaml`, novo) — perfis
+nomeados e reutilizáveis (`ddos_bps_threshold`/`ddos_pps_threshold`)
+atribuíveis a qualquer prefixo via `template:` em `protected_prefixes.yaml`,
+em vez de repetir o mesmo `thresholds` prefixo a prefixo. Ordem de
+resolução (`analyzer/engine.py::evaluate_cycle`): `thresholds` explícito do
+prefixo > `template` > limiar global de `detection.*` em `config.yaml`.
+
+**Ajuste fino** (`detection_overrides.yaml`, novo) — sobrepõe qualquer chave
+de `detection.*` sem reescrever `config.yaml` (preserva os comentários de
+lá), aplicado a cada reload — que no FlowGuard já relê `config.yaml`
+inteiro, dispensando qualquer estado extra em `flowguard.py` (diferente do
+ClientGuard, onde o reload não relê o config principal).
+
+Os dois editáveis via portal: nova seção "Limiares de Detecção" (17 campos,
+salvamento **diff-only** — só envia ao backend as chaves realmente alteradas
+pelo operador) e "Templates de Detecção" (CRUD completo), além de um
+seletor de template por prefixo na tabela de monitoramento existente.
+
+**Bug pego na validação com browser real antes do deploy**: o salvamento
+diff-only comparava o valor arredondado (`Math.round`) contra o original
+não-arredondado — qualquer limiar fracionário (ex: `syn_ratio_threshold:
+0.9`) virava "alterado" mesmo sem o operador tocar no campo, gravando um
+override espúrio (`0.9` → `1`) a cada clique em "Salvar limiares". Corrigido
+antes do primeiro uso real: arredondamento agora só se aplica à conversão
+Mbps→bps, nunca a limiares numéricos genéricos.
+
+34 testes novos: 17 em `tests/test_configio.py` e 13 em
+`tests/test_socket_server.py` (ambos arquivos novos), mais 4 em
+`tests/test_auto_mitigation.py` cobrindo a resolução de limiar por
+template na engine.
 
 ### v1.31.0 — 2026-07-05 — RTBH sempre por host /32 (achado: nunca bloqueava nada de verdade)
 Pedido do usuário: auditoria de um caso real onde o portal mostrava RTBH

@@ -1,0 +1,18 @@
+# detection_templates.yaml — perfis de limiar de detecção reutilizáveis por tipo de
+# rede/prefixo, associados via `template:` em protected_prefixes.yaml. Evita
+# recalibrar os mesmos números pra cada prefixo novo do mesmo perfil (ex.: pool CGNAT,
+# onde o tráfego agregado de muitos clientes combinados exige limiar bem mais alto que
+# um cliente único). Editável via portal (aba Configuração > FlowGuard) ou
+# flowguard-cli detection templates set|del.
+#
+# Ordem de precedência (do mais específico pro mais genérico): thresholds explícito
+# em protected_prefixes.yaml > template > detection.* em config.yaml (usado por
+# qualquer prefixo sem thresholds/template).
+cliente_100g:
+  description: 'Cliente padrão com capacidade contratada de 100 Gbps — mesmo limiar
+    (30 Gbps) já definido manualmente hoje em 7 dos 8 prefixos monitorados (protected_prefixes.yaml),
+    repetido prefixo a prefixo. Disponível pra quem quiser consolidar via portal em
+    vez de manter o valor duplicado em cada um.
+
+    '
+  ddos_bps_threshold: 30000000000

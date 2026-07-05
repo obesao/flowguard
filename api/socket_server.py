@@ -332,8 +332,7 @@ class SocketServer:
         self.daemon.reload_config()
         return {"ok": True}
 
-    @staticmethod
-    def _build_monitor_entry(prefix: str, request: dict) -> dict:
+    def _build_monitor_entry(self, prefix: str, request: dict) -> tuple[dict | None, str]:
         entry = {
             "prefix": prefix,
             "customer": request.get("customer", ""),
@@ -348,17 +347,28 @@ class SocketServer:
                 thresholds[key] = int(value)
         if thresholds:
             entry["thresholds"] = thresholds
-        return entry
+        # template: perfil de limiar reutilizável (ver detection_templates.yaml) —
+        # validado aqui (erro claro) em vez de silenciosamente cair no limiar global
+        # por um nome digitado errado.
+        if request.get("template"):
+            template_name = request["template"]
+            if template_name not in self.daemon.config.get("detection_templates", {}):
+                return None, f"template '{template_name}' não existe"
+            entry["template"] = template_name
+        return entry, ""
 
     async def _cmd_monitor_add(self, request: dict) -> dict:
         prefix = request.get("prefix")
         if not prefix:
             return {"ok": False, "error": "prefixo obrigatório"}
+        entry, err = self._build_monitor_entry(prefix, request)
+        if err:
+            return {"ok": False, "error": err}
         path = self.daemon.config["_protected_prefixes_file"]
         items = configio.load_yaml_list(path)
-        if any(entry.get("prefix") == prefix for entry in items):
+        if any(e.get("prefix") == prefix for e in items):
             return {"ok": False, "error": "prefixo já está monitorado"}
-        items.append(self._build_monitor_entry(prefix, request))
+        items.append(entry)
         configio.save_yaml_list(path, items, header_comment=PROTECTED_PREFIXES_HEADER)
         self.daemon.reload_config()
         return {"ok": True}
@@ -370,9 +380,11 @@ class SocketServer:
         prefix = request.get("prefix")
         if not prefix:
             return {"ok": False, "error": "prefixo obrigatório"}
+        entry, err = self._build_monitor_entry(prefix, request)
+        if err:
+            return {"ok": False, "error": err}
         path = self.daemon.config["_protected_prefixes_file"]
         items = configio.load_yaml_list(path)
-        entry = self._build_monitor_entry(prefix, request)
         for i, existing in enumerate(items):
             if existing.get("prefix") == prefix:
                 items[i] = entry
@@ -395,6 +407,52 @@ class SocketServer:
         configio.save_yaml_list(path, filtered, header_comment=PROTECTED_PREFIXES_HEADER)
         self.daemon.reload_config()
         return {"ok": True}
+
+    # --- ajuste fino dos limiares de detecção (detection.* de config.yaml) e dos
+    # templates de perfil de rede (ex.: cgnat, ver detection_templates.yaml) ---------
+
+    async def _cmd_detection_cfg(self, request: dict) -> dict:
+        return {"ok": True, "detection": self.daemon.config.get("detection", {})}
+
+    async def _cmd_detection_cfg_set(self, request: dict) -> dict:
+        changes = request.get("changes")
+        if not isinstance(changes, dict) or not changes:
+            return {"ok": False, "error": "changes (objeto não vazio) obrigatório"}
+        path = self.daemon.config["_detection_overrides_file"]
+        try:
+            configio.save_detection_overrides(path, changes)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.daemon.reload_config()
+        return {"ok": True, "detection": self.daemon.config.get("detection", {})}
+
+    async def _cmd_detection_templates(self, request: dict) -> dict:
+        return {"ok": True, "templates": self.daemon.config.get("detection_templates", {})}
+
+    async def _cmd_detection_templates_set(self, request: dict) -> dict:
+        name = (request.get("name") or "").strip()
+        values = request.get("values")
+        if not name or not isinstance(values, dict) or not values:
+            return {"ok": False, "error": "name e values (objeto não vazio) obrigatórios"}
+        path = self.daemon.config["_detection_templates_file"]
+        try:
+            updated = configio.save_detection_template(path, name, values, request.get("description", ""))
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.daemon.reload_config()
+        return {"ok": True, "templates": updated}
+
+    async def _cmd_detection_templates_del(self, request: dict) -> dict:
+        name = (request.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "name obrigatório"}
+        path = self.daemon.config["_detection_templates_file"]
+        try:
+            updated = configio.delete_detection_template(path, name)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.daemon.reload_config()
+        return {"ok": True, "templates": updated}
 
     async def _cmd_reload(self, request: dict) -> dict:
         self.daemon.reload_config()
