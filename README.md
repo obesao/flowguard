@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.28.0**
+**Versão atual: v1.29.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,35 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.29.0 — 2026-07-05 — "sem proteção" não aparece mais pra ataque que já parou de verdade
+Pedido do usuário: mesmo com o indicador de atividade da v1.28.0, o selo de
+mitigação continuava mostrando "⚠ sem proteção" pra ataques que já não
+tinham tráfego real há um tempo (🟡 sem atividade) — na prática já
+encerrados, só aguardando o fechamento automático (rede de segurança de 6h).
+
+`_fmt_attack_mitigation_cell` agora só mostra "⚠ sem proteção" quando o
+ataque está GENUINAMENTE em andamento (nova `_is_genuinely_active`: mesmo
+critério do 🟢/🟡 — `ts_end` nulo E `ts_last_seen` reconfirmado há menos de
+90s). Se está aberto mas sem atividade recente, volta a mostrar "encerrada"
+(neutro) — o alarme é "ainda te atacando sem bloqueio", não "já te atacou
+uma vez sem bloqueio".
+
+**Auditoria à parte, sobre por que alguns ataques mostram "sem mitigação"**
+(nenhuma regra jamais tentada, nem manual nem automática): confirmado nos
+dados reais que são 2 causas legítimas, não bug:
+1. `syn_flood` (tipo novo) ainda não tem entrada em `mitigation_profiles.yaml`
+   — sem perfil, `auto_mode` cai no padrão `off`, decisão já documentada no
+   changelog do próprio recurso (v1.27.0).
+2. Ataques antigos (ex: #88/#89, `ddos_volumetrico` em dois prefixos
+   monitorados, 2026-07-04 11:36) aconteceram ANTES de
+   `protected_prefixes.yaml` ser editado (mtime 12:01, mesmo dia) habilitando
+   `auto_mitigate: true` pra esses prefixos — histórico legítimo, não reflete
+   a config atual.
+
+Validado com Playwright real: 0 linhas "sem atividade" mostrando "sem
+proteção" nas duas telas (portal), lógica testada em isolamento pros 4 casos
+de borda (aberto+fresco, aberto+parado, fechado, sem ts_last_seen).
 
 ### v1.28.0 — 2026-07-04 — Indicador "atividade recente" no CLI (attacks/attack detail)
 Pedido do usuário: "ativo" sozinho não diz se o ataque está REALMENTE

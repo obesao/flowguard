@@ -195,14 +195,24 @@ def _fmt_activity_freshness(ts_last_seen: int | None, row_open: bool) -> str:
     return f"[yellow]🟡 sem atividade há {fmt_duration(age_s)}[/yellow]"
 
 
+# pedido do usuário: se o ataque já não está mais acontecendo de verdade
+# (🟡 sem atividade — ver _fmt_activity_freshness acima), a Mitigação não deve
+# mais gritar "⚠ sem proteção" (é alarme de "ainda te atacando sem bloqueio",
+# não de "já te atacou uma vez sem bloqueio"). Mesmo critério do 🟢 acima.
+def _is_genuinely_active(ts_end: int | None, ts_last_seen: int | None) -> bool:
+    if ts_end or not ts_last_seen:
+        return False
+    return (int(time.time()) - ts_last_seen) < _ACTIVITY_FRESH_WINDOW_S
+
+
 def _fmt_attack_mitigation_cell(mitigation: dict | None, row_open: bool = False) -> str:
     if not mitigation:
         return "[dim]sem mitigação[/dim]"
     label = _fmt_mitigation_action(mitigation.get("action"))
     if mitigation.get("active"):
         return f"[green]🛡 ativa ({label})[/green]"
-    # ataque ainda ativo (ts_end NULL) com mitigação já encerrada = cliente SEM
-    # proteção agora, não é só histórico — pedido do usuário pra deixar isso claro
+    # ataque GENUINAMENTE ativo (ver _is_genuinely_active) com mitigação já
+    # encerrada = cliente SEM proteção agora, não é só histórico
     if row_open:
         return f"[red]⚠ sem proteção ({label})[/red]"
     return f"[dim]encerrada ({label})[/dim]"
@@ -227,10 +237,11 @@ def cmd_attacks(args: argparse.Namespace, sock_path: str) -> None:
     table.add_column("IA")
     for row in resp["attacks"]:
         row_open = not row.get("ts_end")
+        genuinely_active = _is_genuinely_active(row.get("ts_end"), row.get("ts_last_seen"))
         table.add_row(
             str(row["id"]), row["dst_prefix"], row["attack_type"], row["severity"],
             fmt_bps(row["bps_peak"] or 0), _fmt_activity_freshness(row.get("ts_last_seen"), row_open),
-            _fmt_attack_mitigation_cell(row.get("mitigation"), row_open),
+            _fmt_attack_mitigation_cell(row.get("mitigation"), genuinely_active),
             "sim" if row.get("ai_analysis") else "-",
         )
     if not resp["attacks"]:
@@ -254,7 +265,7 @@ def cmd_attack_detail(attack_id: int, sock_path: str) -> None:
         f"Status: {'encerrado' if attack['ts_end'] else '[red]ativo[/red]'}"
         f"{'  |  Atividade: ' + _fmt_activity_freshness(attack.get('ts_last_seen'), not attack['ts_end']) if not attack['ts_end'] else ''}"
         f"{'  |  Alvo (host): ' + attack['target_host'] if attack.get('target_host') else ''}\n"
-        f"Mitigação: {_fmt_attack_mitigation_cell(attack.get('mitigation'), not attack.get('ts_end'))}\n"
+        f"Mitigação: {_fmt_attack_mitigation_cell(attack.get('mitigation'), _is_genuinely_active(attack.get('ts_end'), attack.get('ts_last_seen')))}\n"
         f"Duração: {fmt_duration(summary.get('duration_s', 0))}  |  "
         f"Total: {fmt_bytes(summary.get('total_bytes', 0))}, "
         f"{summary.get('total_packets', 0):,} pacotes, "
