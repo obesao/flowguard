@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.30.0**
+**Versão atual: v1.30.1**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,21 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.30.1 — 2026-07-05 — Corrige "Host/prefixo: None" em regra sem dst_prefix
+Achado logo depois do deploy da v1.30.0, já em produção: regras de bloqueio
+automático de cliente abusivo (ClientGuard, mesmo `BgpManager`) identificam o
+alvo só por `src_prefix` (ex: regra real #275, `ClientGuard auto:
+port_scan_horizontal`, `src_prefix=100.64.109.236/32`, sem `dst_prefix`) — o
+alerta novo de mitigação aplicada mandava literalmente "Host/prefixo: None"
+pro WhatsApp nesse caso.
+
+`flowspec_add`/`flowspec_del`/`expire_cycle` (`bgp/manager.py`) agora caem
+pra `src_prefix` quando `dst_prefix` está ausente antes de repassar pro
+alerta; `notify_mitigation_applied`/`notify_mitigation_reverted`
+(`flowguard.py`) ganharam um último fallback pra `"?"` como rede de segurança
+(nunca mais mostra `None` literal, mesmo se um chamador futuro esquecer de
+passar algum prefixo). 2 testes de regressão novos.
 
 ### v1.30.0 — 2026-07-05 — Alerta de WhatsApp mostra o host exato, horários e a ação de mitigação
 Pedido do usuário: o alerta de ataque só mostrava o prefixo/bloco inteiro

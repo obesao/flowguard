@@ -284,7 +284,7 @@ class FlowGuardDaemon:
             # storage.apply_attack_changes) — na abertura, quando a auto-mitigação
             # dispara, ainda não existe; recalcula ao vivo pra não perder o host exato.
             target_host = await self.run_read_db(storage.attack_top_host, dst_prefix, attack["ts_start"], None)
-        host_line = target_host or dst_prefix
+        host_line = target_host or dst_prefix or "?"
         action_label = MITIGATION_ACTION_LABELS.get(action, action)
         origin_label = "automática" if trigger_type == "auto" else "manual"
         message = (
@@ -304,7 +304,7 @@ class FlowGuardDaemon:
             return
         attack_type = attack["attack_type"] if attack else None
         target_host = attack.get("target_host") if attack else None
-        host_line = target_host or dst_prefix
+        host_line = target_host or dst_prefix or "?"
         action_label = MITIGATION_ACTION_LABELS.get(action, action)
         now = int(time.time())
         duration_line = f"\nDuração da mitigação: {_fmt_duration(now - applied_at)}" if applied_at else ""

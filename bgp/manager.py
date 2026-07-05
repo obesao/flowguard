@@ -237,8 +237,13 @@ class BgpManager:
         rule_id = await self.daemon.run_db(storage.insert_flowspec_rule, self.daemon.conn, row)
         if attack_id is not None:
             await self.daemon.run_db(storage.mark_attack_mitigated, self.daemon.conn, attack_id)
+        # regras de bloqueio de cliente abusivo (ClientGuard, via este mesmo BgpManager)
+        # identificam o alvo por src_prefix, não dst_prefix — sem o fallback, o alerta
+        # mostraria "Host/prefixo: None" pra esse tipo de regra
         self.daemon.fire_and_forget(
-            self.daemon.notify_mitigation_applied(rule_id, attack_id, rule.get("dst_prefix"), rule["action"], trigger_type, ttl_s),
+            self.daemon.notify_mitigation_applied(
+                rule_id, attack_id, rule.get("dst_prefix") or rule.get("src_prefix"), rule["action"], trigger_type, ttl_s
+            ),
             f"alerta de mitigação aplicada (regra {rule_id})",
         )
         LOG.warning("FlowSpec anunciado pro peer '%s': %s (regra id=%s, ttl=%ds)", peer, rule, rule_id, ttl_s)
@@ -259,7 +264,7 @@ class BgpManager:
             LOG.info("regra retirada manualmente: id=%s %s", rule_id, row.get("dst_prefix"))
             self.daemon.fire_and_forget(
                 self.daemon.notify_mitigation_reverted(
-                    rule_id, row.get("attack_id"), row.get("dst_prefix"), row["action"],
+                    rule_id, row.get("attack_id"), row.get("dst_prefix") or row.get("src_prefix"), row["action"],
                     "revertida manualmente", row["created_at"],
                 ),
                 f"alerta de mitigação revertida (regra {rule_id})",
@@ -306,7 +311,7 @@ class BgpManager:
                 LOG.info("regra expirada e retirada: id=%s %s (%s)", row["id"], row.get("dst_prefix"), row["action"])
                 self.daemon.fire_and_forget(
                     self.daemon.notify_mitigation_reverted(
-                        row["id"], row.get("attack_id"), row.get("dst_prefix"), row["action"],
+                        row["id"], row.get("attack_id"), row.get("dst_prefix") or row.get("src_prefix"), row["action"],
                         "TTL expirado", row["created_at"],
                     ),
                     f"alerta de mitigação revertida (regra {row['id']})",

@@ -201,6 +201,19 @@ def test_notify_mitigation_applied_without_attack_id_always_fires(tmp_path):
     assert "manual" in daemon.wa_messages[0]
 
 
+def test_notify_mitigation_applied_never_shows_none_as_host(tmp_path):
+    """Regressão: sem target_host nem dst_prefix (nenhum ataque associado e regra
+    identificada só por src_prefix), a mensagem não pode virar 'Host/prefixo: None'."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = _make_daemon(conn)
+
+    asyncio.run(daemon.notify_mitigation_applied(10, None, None, "discard", "auto", 21600))
+
+    assert len(daemon.wa_messages) == 1
+    assert "None" not in daemon.wa_messages[0]
+    assert "Host/prefixo: ?" in daemon.wa_messages[0]
+
+
 def test_notify_mitigation_reverted_includes_duration_and_reason(tmp_path):
     conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
     daemon = _make_daemon(conn)
@@ -323,6 +336,32 @@ def test_flowspec_add_fires_mitigation_applied_with_discard_action(tmp_path):
     assert len(daemon.applied_calls) == 1
     _rule_id, attack_id, dst_prefix, action, trigger_type, _ttl = daemon.applied_calls[0]
     assert (attack_id, dst_prefix, action, trigger_type) == (7, "177.86.18.0/24", "discard", "manual")
+
+
+def test_flowspec_add_falls_back_to_src_prefix_when_dst_prefix_missing(tmp_path):
+    """Regressão: regras de bloqueio de cliente abusivo (ClientGuard, mesmo BgpManager)
+    identificam o alvo só por src_prefix — sem o fallback, o alerta mandava
+    'Host/prefixo: None' pro WhatsApp (achado em produção logo após o deploy desta
+    feature: regra real #275, 'ClientGuard auto: port_scan_horizontal', só com
+    src_prefix='100.64.109.236/32')."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = RecordingFakeDaemon(conn)
+    manager = BgpManager(daemon)
+
+    async def fake_send(payload):
+        return {"ok": True}
+    manager._send = fake_send
+
+    rule = {"src_prefix": "100.64.109.236/32", "action": "discard", "protocol": "tcp", "dst_port": "771"}
+
+    async def scenario():
+        await manager.flowspec_add(rule, trigger_type="auto")
+        await _drain(daemon)
+    asyncio.run(scenario())
+
+    assert len(daemon.applied_calls) == 1
+    _rule_id, _attack_id, dst_prefix, _action, _trigger_type, _ttl = daemon.applied_calls[0]
+    assert dst_prefix == "100.64.109.236/32"
 
 
 def test_unban_fires_mitigation_reverted_with_created_at(tmp_path):
