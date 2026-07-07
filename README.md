@@ -83,6 +83,39 @@ análise sob demanda.
 
 ## Changelog
 
+### v1.32.3 — 2026-07-07 — Testes pytest pra FlowGuardDaemon._aggregate_once (core da agregação)
+Sequência da v1.32.2: `_aggregate_once` (flowguard.py) é o método com mais
+histórico de bugs reais deste projeto (explosão de flow_aggs por porta
+efêmera/cauda longa de fallback, dupla contagem ingress+egress, granularidade
+de host /32, ranking de target_host) e não tinha teste nenhum.
+
+`tests/test_aggregate_once.py` (11 testes) instancia `FlowGuardDaemon` sem
+rodar `__init__` (mesmo padrão já usado em `test_wa_notifications.py`/
+`test_bgp_manager.py` — seta só queue/config/conn e fakes gravando chamada
+pro detector/bgp_manager), gravando num SQLite real via `tmp_path`. Cobre:
+flow_direction!=0 não duplica contagem (a NE8000 exporta o mesmo pacote em
+ingress+egress); `bucket_dst_port` aplicado certo (zero pra fallback mesmo
+em porta well-known, mantém porta em prefixo protegido, zera porta
+efêmera); `top_dst_ips` só rastreado em prefixo protegido (lista vazia vira
+NULL, não `"[]"` — achado ao escrever o teste, não bug); tráfego de saída só
+agregado quando o SRC é protegido; cauda longa de fallback funde no bucket
+"outros" preservando os totais; `amp_totals` só some UDP em porta de
+amplificação conhecida; `syn_totals` só soma SYN "puro" (exclui handshake
+SYN+ACK); sampling_rate multiplica bytes/pacotes; fila vazia ainda roda
+`evaluate_cycle`/`expire_cycle` (fecha ataques inativos mesmo sem tráfego
+novo).
+
+`tests/test_flowguard_helpers.py` (12 testes): `_fmt_dt`/`_fmt_duration`
+(bordas: `None`/zero/negativo, singular vs plural implícito nos formatos
+`XhYYmin`/`Xmin`/`Xs`) e `bucket_dst_port` isolado (fronteira exata do
+`EPHEMERAL_PORT_MIN`).
+
+Cobertura de `flowguard.py`: 30% → 50% (o resto que falta é majoritariamente
+wiring de I/O — `__init__`, `setup_logging`, `udp_listener`, `daemonize`,
+`main` — baixo valor por linha pra teste unitário, exercitado de fato só
+rodando o daemon real). Suíte completa: 217 → 240 testes, todos passando,
+sem regressão.
+
 ### v1.32.2 — 2026-07-07 — Testes pytest pra collector/prefixes.py e collector/netflow.py
 Dívida técnica levantada na auditoria de cobertura (0% e 38% respectivamente,
 antes desta leva) — as duas maiores lacunas em código de dado puro (sem I/O),
