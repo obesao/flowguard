@@ -83,6 +83,33 @@ análise sob demanda.
 
 ## Changelog
 
+### v1.32.2 — 2026-07-07 — Testes pytest pra collector/prefixes.py e collector/netflow.py
+Dívida técnica levantada na auditoria de cobertura (0% e 38% respectivamente,
+antes desta leva) — as duas maiores lacunas em código de dado puro (sem I/O),
+fácil de testar de forma isolada e crítico porque corrompe tudo rio abaixo em
+silêncio se quebrar (mesma classe dos bugs reais já documentados aqui:
+urldecode sob dash, exclusão de ICMP nos detectores de scan).
+
+`tests/test_prefixes.py` (12 testes): prefixo mais específico entre entradas
+sobrepostas, fallback pro prefixo mais largo, entrada malformada/sem chave
+`prefix` ignorada silenciosamente, IP inválido, IPv4/IPv6, fallback pra /24
+ou /64 quando não há prefixo protegido. Cobertura de `collector/prefixes.py`:
+15% → 100%.
+
+`tests/test_netflow.py` (14 testes): monta pacotes NetFlow v9 byte a byte
+(RFC 3954) em vez de depender de captura real — template flowset antes/depois
+do data flowset (o parser descarta em silêncio dados que chegam antes do
+template correspondente, comportamento esperado do protocolo, mas nunca
+testado), template com escopo por (peer, source_id, template_id), múltiplos
+registros por flowset, IPv4/IPv6, campos ausentes (default 0), versão
+diferente de 9, pacote truncado/mais curto que o header, `flowset_len`
+apontando além do fim real do pacote (garante que o parser para em vez de
+estourar), `flowset_len` abaixo do mínimo, options template (flowset_id=1)
+ignorado sem erro. Cobertura de `collector/netflow.py`: 38% → 97% (as 3
+linhas restantes são branches de fallback de campo raramente exercitadas,
+não vale o esforço de simular). Suíte completa: 191 → 217 testes, todos
+passando, sem regressão.
+
 ### v1.32.1 — 2026-07-07 — Ajuste operacional: 177.86.17.0/24 sai da auto-mitigação
 `auto_mitigate`/`notify_wa` desligados e `thresholds.ddos_bps_threshold`
 customizado removido (volta ao limiar global/template) pra
