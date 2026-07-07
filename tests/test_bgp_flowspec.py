@@ -8,7 +8,58 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import pytest
+
 from bgp import flowspec
+
+
+# --- parse_rule_string ------------------------------------------------------------
+# discard/rtbh não levam valor — aceitos como palavra solta ("discard"), além do
+# formato antigo "chave=valor" (mantido por compatibilidade — ver flowspec.py).
+
+def test_parse_rule_string_bare_discard():
+    rule = flowspec.parse_rule_string("dst=177.86.16.0/24 protocol=udp discard")
+    assert rule == {"dst_prefix": "177.86.16.0/24", "protocol": "udp", "action": "discard"}
+
+
+def test_parse_rule_string_bare_rtbh():
+    rule = flowspec.parse_rule_string("dst=177.86.16.10/32 rtbh")
+    assert rule == {"dst_prefix": "177.86.16.10/32", "action": "rtbh"}
+
+
+def test_parse_rule_string_legacy_discard_with_dummy_value_still_works():
+    rule = flowspec.parse_rule_string("dst=177.86.16.0/24 discard=1")
+    assert rule["action"] == "discard"
+
+
+def test_parse_rule_string_legacy_rtbh_with_dummy_value_still_works():
+    rule = flowspec.parse_rule_string("dst=177.86.16.10/32 rtbh=1")
+    assert rule["action"] == "rtbh"
+
+
+def test_parse_rule_string_rate_limit_requires_value():
+    rule = flowspec.parse_rule_string("dst=177.86.16.0/24 rate-limit=1M")
+    assert rule["action"] == "rate-limit:1000000"
+
+
+def test_parse_rule_string_redirect_requires_value():
+    rule = flowspec.parse_rule_string("dst=177.86.16.0/24 redirect=9999:1")
+    assert rule["action"] == "redirect:9999:1"
+
+
+def test_parse_rule_string_missing_action_raises():
+    with pytest.raises(ValueError, match="precisa de uma ação"):
+        flowspec.parse_rule_string("dst=177.86.16.0/24 protocol=udp")
+
+
+def test_parse_rule_string_unknown_field_raises():
+    with pytest.raises(ValueError, match="campo desconhecido"):
+        flowspec.parse_rule_string("dst=177.86.16.0/24 campo-invalido=x discard")
+
+
+def test_parse_rule_string_token_without_equals_and_not_a_bare_action_raises():
+    with pytest.raises(ValueError, match="token inválido"):
+        flowspec.parse_rule_string("dst=177.86.16.0/24 isso_nao_e_nada discard")
 
 
 def test_build_command_flowspec_announce_without_neighbor():

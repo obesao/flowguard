@@ -5,11 +5,8 @@ daemon:
   log_level: info
 collector:
   netflow_port: 2055
-  sflow_port: 6343
-  ipfix_port: 9995
   bind_ip: 10.77.10.2
   sampling_rate: 1000
-  buffer_size: 65536
 database:
   path: /root/flowguard/db/flows.sqlite
   retention_days: 14
@@ -17,14 +14,15 @@ database:
 detection:
   ddos_pps_threshold: 100000
   ddos_bps_threshold: 500000000
+  # limiar próprio de amplificação (dns/ntp/ssdp/memcached/cldap) — separado do
+  # volumétrico acima porque amplificação real tipicamente tem volume bem menor
+  # que um DDoS volumétrico puro; reusar 500M deixava passar amplificação genuína
+  amp_bps_threshold: 100000000
   syn_ratio_threshold: 0.9
   # piso de pps de TCP total no prefixo antes de avaliar a proporção de SYN acima —
   # sem isso, um prefixo quase sem tráfego TCP dispara com poucos pacotes (proporção
   # alta por acaso, não por ataque de verdade)
   syn_min_pps_floor: 500
-  dns_amp_factor: 10
-  scan_ports_per_sec: 50
-  scan_hosts_per_sec: 100
   min_attack_duration_s: 10
   # rede de segurança: fecha sozinho um ataque sem reconfirmação de tráfego há mais
   # desse tempo (ver collector/storage.py::close_stale_attacks) — cobre o caso raro
@@ -33,8 +31,6 @@ detection:
   # pra sempre no portal/CLI mesmo com a mitigação já expirada há muito tempo.
   attack_stale_close_s: 21600
   baseline_min_duration_s: 120
-  window_short_s: 30
-  window_long_s: 300
   baseline_enabled: true
   baseline_window_minutes: 180
   baseline_min_samples: 120
@@ -86,18 +82,6 @@ detection_templates_file: /root/flowguard/detection_templates.yaml
 # Configuração > FlowGuard) ou flowguard-cli, aplicado a cada carga/reload (sem
 # reiniciar o daemon) — arquivo ausente/vazio = usa os valores abaixo sem ajuste.
 detection_overrides_file: /root/flowguard/detection_overrides.yaml
-threat_feeds:
-  enabled: true
-  update_interval_h: 6
-  cache_file: /root/flowguard/db/threat_ips.txt
-  sources:
-  - https://feodotracker.abuse.ch/downloads/ipblocklist.txt
-  - https://raw.githubusercontent.com/stamparm/ipsum/master/levels/3.txt
-  - https://www.spamhaus.org/drop/drop.txt
-  - https://www.spamhaus.org/drop/edrop.txt
-geoip:
-  asn_db: /usr/share/GeoIP/GeoLite2-ASN.mmdb
-  country_db: /usr/share/GeoIP/GeoLite2-Country.mmdb
 alerts:
   whatsapp: true
   min_severity_wa: high

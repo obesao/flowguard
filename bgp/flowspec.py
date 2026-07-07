@@ -31,6 +31,10 @@ _RULE_STRING_KEYS = {
     "pkt-len": "pkt_len",
 }
 _RULE_STRING_ACTIONS = {"discard", "rate-limit", "rtbh", "redirect"}
+# discard/rtbh não têm valor nenhum — aceitos como palavra solta ("discard", não
+# "discard=1"), além do antigo formato "chave=valor" (mantido por compatibilidade,
+# com valor descartado). rate-limit/redirect sempre exigem "=valor".
+_RULE_STRING_BARE_ACTIONS = {"discard", "rtbh"}
 
 
 def parse_size(value: str) -> int:
@@ -43,10 +47,14 @@ def parse_size(value: str) -> int:
 
 
 def parse_rule_string(rule_str: str) -> dict:
-    """Faz parse do formato usado por `flowguard-cli flowspec add "dst=X protocol=udp src-port=53 rate-limit=1M"`."""
+    """Faz parse do formato usado por `flowguard-cli flowspec add "dst=X protocol=udp discard"`
+    ou "... rate-limit=1M". discard/rtbh não levam valor — aceitos como palavra solta."""
     rule: dict = {}
     action = None
     for token in rule_str.split():
+        if token in _RULE_STRING_BARE_ACTIONS:
+            action = token
+            continue
         if "=" not in token:
             raise ValueError(f"token inválido (esperado key=value): {token}")
         key, value = token.split("=", 1)

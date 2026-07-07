@@ -294,7 +294,7 @@ DETECTION_TEMPLATES_HEADER = (
 )
 # mesmas chaves que protected_prefixes.yaml::thresholds já suporta (ver
 # analyzer/engine.py) — um template é só uma forma reutilizável de definir as duas.
-DETECTION_TEMPLATE_KEYS = {"ddos_bps_threshold", "ddos_pps_threshold"}
+DETECTION_TEMPLATE_KEYS = {"ddos_bps_threshold", "ddos_pps_threshold", "amp_bps_threshold"}
 
 
 def load_detection_templates(path: str) -> dict:
@@ -356,9 +356,9 @@ DETECTION_OVERRIDES_HEADER = (
     "# flowguard-cli detection set. Vazio = usa os valores de config.yaml sem ajuste."
 )
 DETECTION_TUNABLE_KEYS = {
-    "ddos_bps_threshold", "ddos_pps_threshold", "syn_ratio_threshold", "syn_min_pps_floor",
-    "dns_amp_factor", "scan_ports_per_sec", "scan_hosts_per_sec", "min_attack_duration_s",
-    "attack_stale_close_s", "baseline_min_duration_s", "window_short_s", "window_long_s",
+    "ddos_bps_threshold", "ddos_pps_threshold", "amp_bps_threshold",
+    "syn_ratio_threshold", "syn_min_pps_floor", "min_attack_duration_s",
+    "attack_stale_close_s", "baseline_min_duration_s",
     "baseline_enabled", "baseline_window_minutes", "baseline_min_samples", "baseline_sigma",
     "baseline_min_bps",
 }

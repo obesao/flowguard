@@ -81,6 +81,11 @@ class DetectionEngine:
         baseline_min_duration = detection_cfg.get("baseline_min_duration_s", min_duration)
         default_bps_threshold = detection_cfg.get("ddos_bps_threshold", 500_000_000)
         default_pps_threshold = detection_cfg.get("ddos_pps_threshold", 100_000)
+        # limiar próprio de amplificação, separado do volumétrico (achado: reusava
+        # ddos_bps_threshold, 500M — ataques de amplificação real costumam ter volume
+        # bem menor que um DDoS volumétrico puro, então esse limiar deixava passar
+        # amplificação genuína que nunca chegava perto de 500M).
+        default_amp_bps_threshold = detection_cfg.get("amp_bps_threshold", 100_000_000)
         # syn_ratio_threshold já existia no config.yaml de instalações antigas mas nunca
         # tinha sido lido por nenhum código — só religando um limiar órfão, não inventando
         syn_ratio_threshold = detection_cfg.get("syn_ratio_threshold", 0.9)
@@ -116,6 +121,8 @@ class DetectionEngine:
             overrides = entry.get("thresholds") or {}
             bps_threshold = overrides.get("ddos_bps_threshold", template_vals.get("ddos_bps_threshold", default_bps_threshold))
             pps_threshold = overrides.get("ddos_pps_threshold", template_vals.get("ddos_pps_threshold", default_pps_threshold))
+            amp_bps_threshold = overrides.get(
+                "amp_bps_threshold", template_vals.get("amp_bps_threshold", default_amp_bps_threshold))
 
             by_proto = proto_totals.get(prefix, {})
             total_bps = sum(v["bps"] for v in by_proto.values())
@@ -139,7 +146,7 @@ class DetectionEngine:
                 amp = amp_totals.get((prefix, src_port))
                 amp_bps = amp["bps"] if amp else 0
                 amp_pps = amp["pps"] if amp else 0
-                amp_hit = amp_bps > bps_threshold
+                amp_hit = amp_bps > amp_bps_threshold
                 any_amp_hit = any_amp_hit or amp_hit
                 if toggle_on(amp_type):
                     self._evaluate(now, prefix, amp_type, severity, amp_hit, amp_bps, amp_pps,

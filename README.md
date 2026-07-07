@@ -83,6 +83,51 @@ análise sob demanda.
 
 ## Changelog
 
+### v1.34.0 — 2026-07-07 — Limiar de amplificação próprio + sintaxe do flowspec add + limpeza de config morto
+Fecha as outras 3 pendências técnicas antigas (2026-07-02, revisão de
+`flow_aggs`) escolhidas pelo usuário na mesma leva.
+
+**Limiar de amplificação separado do volumétrico** (achado original): `amp_hit`
+reusava `ddos_bps_threshold` (500M) pra decidir se dns_amp/ntp_amp/ssdp_amp/
+memcached_amp/cldap_amp estava acontecendo — amplificação real tipicamente tem
+volume bem menor que um DDoS volumétrico puro, então o limiar deixava passar
+amplificação genuína que nunca chegava perto de 500M. Novo
+`detection.amp_bps_threshold` (default 100M, 5x mais sensível), com a MESMA
+cadeia de resolução que `ddos_bps_threshold` (thresholds do prefixo > template
+> global — `analyzer/engine.py`), e editável por prefixo via
+`monitor_add`/`monitor_set` (`api/socket_server.py`, mesmo campo `thresholds`).
+4 testes novos em `tests/test_auto_mitigation.py` — achado ao escrever: a
+detecção de amplificação (`AMP_PORTS`, já existente há tempos) nunca tinha
+teste algum cobrindo `amp_totals` com valor real, só chamadas com `{}`.
+**Não exposto ainda na UI de ajuste fino do portal** (`flowguard-portal`,
+seção "Limiares de Detecção") — editável via YAML/CLI/socket, falta só o campo
+no formulário do lado do `site`.
+
+**`parse_rule_string` aceita `discard`/`rtbh` como palavra solta**: antes
+exigia `discard=1`/`rtbh=1` (valor obrigatório mesmo não significando nada,
+já que todo token precisava de `=`) — sintaxe estranha, nunca usada de fato em
+nenhum script real do projeto. Formato antigo continua funcionando
+(compatibilidade sem custo: `discard=1` ainda cai no branch de
+`_RULE_STRING_ACTIONS`). 10 testes novos em `tests/test_bgp_flowspec.py` — o
+parser nunca tinha teste dedicado algum.
+
+**Config morto removido** de `config.yaml`: `collector.sflow_port`/
+`ipfix_port`/`buffer_size` (o coletor só fala NetFlow v9 via UDP asyncio, sem
+parser sFlow/IPFIX nem uso de buffer configurável), `threat_feeds.*` e
+`geoip.*` (nenhum dos dois nunca foi implementado — confirmado grep vazio em
+todo o projeto, incluindo o portal). Achado extra na mesma varredura: 5 chaves
+de `detection.*` também nunca lidas por código nenhum (só listadas em
+`DETECTION_TUNABLE_KEYS` de `configio.py`, sem efeito real) —
+`dns_amp_factor`, `scan_ports_per_sec`, `scan_hosts_per_sec`, `window_short_s`,
+`window_long_s` — removidas junto por serem exatamente a mesma classe de
+problema. `FlowRecord` (`collector/models.py`) ainda tem campos de
+enriquecimento nunca escritos (`src_country`/`src_category`/`is_bogon`/
+`threat_score`) e `flow_aggs.src_countries` sempre grava `{}` — deixados de
+fora desta limpeza (mexeriam em schema/dataclass, escopo maior que o pedido).
+
+Suíte: 385 → 389 testes, todos passando. `flowguard.service` reiniciado em
+produção duas vezes nesta sessão (reconciliação BGP + esta leva) sem erro.
+
 ### v1.33.0 — 2026-07-07 — Reconciliação BGP pós-restart do ExaBGP
 Pendência conhecida desde a revisão de `flow_aggs` (2026-07-02, ver changelog
 daquela versão), nunca implementada: se o `flowguard-speaker` (processo

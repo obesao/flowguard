@@ -271,7 +271,7 @@ def test_flowspec_add_accepts_dict_rule(tmp_path):
 
 def test_flowspec_add_parses_string_rule(tmp_path):
     server = make_server(tmp_path)
-    resp = dispatch(server, {"cmd": "flowspec_add", "rule": "dst=177.86.16.0/24 protocol=udp discard=1"})
+    resp = dispatch(server, {"cmd": "flowspec_add", "rule": "dst=177.86.16.0/24 protocol=udp discard"})
     assert resp["ok"] is True
     parsed_rule = server.daemon.bgp_manager.calls[0][1]
     assert parsed_rule["dst_prefix"] == "177.86.16.0/24"

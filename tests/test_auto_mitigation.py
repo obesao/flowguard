@@ -744,3 +744,93 @@ def test_engine_evaluate_cycle_backward_compatible_without_syn_totals(tmp_path):
 
     asyncio.run(_run_cycle(engine, daemon))
     assert len(daemon.bgp_manager.calls) == 1
+
+
+# --- limiar próprio de amplificação (amp_bps_threshold), separado do volumétrico ---
+# Achado real: amp_hit reusava ddos_bps_threshold (500M) — amplificação genuína
+# tipicamente tem volume bem menor que um DDoS volumétrico puro, então nunca
+# disparava. Ver analyzer/engine.py::evaluate_cycle.
+
+def _amp_cfg(amp_bps_threshold=1000, ddos_bps_threshold=10**9, auto_mode="rtbh"):
+    return {
+        "detection": {"min_attack_duration_s": 0, "ddos_bps_threshold": ddos_bps_threshold,
+                      "ddos_pps_threshold": 10**9, "amp_bps_threshold": amp_bps_threshold,
+                      "baseline_enabled": False},
+        "protected_prefixes": [{"prefix": "177.86.16.0/24", "customer": "teste", "auto_mitigate": True}],
+        "whitelist": [],
+        "detection_toggles": {},
+        "mitigation_profiles": {**configio.DEFAULT_MITIGATION_PROFILES,
+                                 "dns_amp": {**configio.DEFAULT_MITIGATION_PROFILES["dns_amp"],
+                                             "auto_mode": auto_mode}},
+        "database": {"aggregate_interval_s": 30},
+    }
+
+
+def test_engine_amp_detection_uses_its_own_threshold_not_volumetric(tmp_path):
+    """Tráfego de amplificação (2000bps na porta 53) fica bem abaixo do limiar
+    volumétrico (1 bilhão) mas acima do limiar de amplificação próprio (1000) —
+    deve abrir dns_amp mesmo sem chegar perto de disparar ddos_volumetrico."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = EngineFakeDaemon(conn, _amp_cfg(amp_bps_threshold=1000, ddos_bps_threshold=10**9))
+    engine = DetectionEngine(daemon)
+
+    proto_totals = {"177.86.16.0/24": {17: {"bps": 2000, "pps": 10}}}
+    amp_totals = {("177.86.16.0/24", 53): {"bps": 2000, "pps": 10}}
+
+    asyncio.run(engine.evaluate_cycle(int(time.time()), proto_totals, amp_totals, {}))
+    for _what, coro in daemon.fired:
+        asyncio.run(coro)
+
+    assert len(daemon.bgp_manager.calls) == 1
+    assert daemon.bgp_manager.calls[0][1:] == ("dns_amp", "177.86.16.0/24", "rtbh")
+
+
+def test_engine_amp_detection_respects_its_own_threshold_when_below(tmp_path):
+    """Mesmo tráfego de amplificação, agora abaixo do limiar de amp (5000) —
+    não deve abrir ataque, mesmo que o volumétrico esteja configurado bem baixo
+    também (limiares independentes, um não vaza pro outro)."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = EngineFakeDaemon(conn, _amp_cfg(amp_bps_threshold=5000, ddos_bps_threshold=10**9))
+    engine = DetectionEngine(daemon)
+
+    proto_totals = {"177.86.16.0/24": {17: {"bps": 2000, "pps": 10}}}
+    amp_totals = {("177.86.16.0/24", 53): {"bps": 2000, "pps": 10}}
+
+    asyncio.run(engine.evaluate_cycle(int(time.time()), proto_totals, amp_totals, {}))
+
+    assert daemon.bgp_manager.calls == []
+
+
+def test_engine_amp_threshold_resolves_from_template(tmp_path):
+    """amp_bps_threshold segue a mesma cadeia de resolução que ddos_bps_threshold:
+    thresholds do prefixo > template > global."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    cfg = _amp_cfg(amp_bps_threshold=100, ddos_bps_threshold=10**9)  # global baixo (não deveria vencer)
+    cfg["protected_prefixes"][0]["template"] = "cgnat"
+    cfg["detection_templates"] = {"cgnat": {"amp_bps_threshold": 5000}}
+    daemon = EngineFakeDaemon(conn, cfg)
+    engine = DetectionEngine(daemon)
+
+    proto_totals = {"177.86.16.0/24": {17: {"bps": 2000, "pps": 10}}}
+    amp_totals = {("177.86.16.0/24", 53): {"bps": 2000, "pps": 10}}
+
+    asyncio.run(engine.evaluate_cycle(int(time.time()), proto_totals, amp_totals, {}))
+
+    assert daemon.bgp_manager.calls == []  # 2000 < 5000 (template), mesmo com global 100
+
+
+def test_engine_amp_threshold_defaults_when_not_configured(tmp_path):
+    """Sem amp_bps_threshold em detection.*, cai no default (100M) — não quebra
+    com KeyError nem herda silenciosamente o valor de ddos_bps_threshold."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    cfg = _amp_cfg(ddos_bps_threshold=10**9)
+    del cfg["detection"]["amp_bps_threshold"]
+    daemon = EngineFakeDaemon(conn, cfg)
+    engine = DetectionEngine(daemon)
+
+    proto_totals = {"177.86.16.0/24": {17: {"bps": 50_000_000, "pps": 10}}}
+    amp_totals = {("177.86.16.0/24", 53): {"bps": 50_000_000, "pps": 10}}  # < 100M default
+
+    asyncio.run(engine.evaluate_cycle(int(time.time()), proto_totals, amp_totals, {}))
+
+    assert daemon.bgp_manager.calls == []

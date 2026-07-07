@@ -341,7 +341,7 @@ class SocketServer:
             "notify_wa": bool(request.get("notify_wa", False)),
         }
         thresholds = {}
-        for key in ("ddos_bps_threshold", "ddos_pps_threshold"):
+        for key in ("ddos_bps_threshold", "ddos_pps_threshold", "amp_bps_threshold"):
             value = (request.get("thresholds") or {}).get(key)
             if value:
                 thresholds[key] = int(value)
