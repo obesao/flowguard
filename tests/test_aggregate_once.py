@@ -46,9 +46,13 @@ class RecordingDetector:
 class RecordingBgpManager:
     def __init__(self):
         self.expire_calls = 0
+        self.reconciliation_calls = 0
 
     async def expire_cycle(self):
         self.expire_calls += 1
+
+    async def check_reconciliation(self):
+        self.reconciliation_calls += 1
 
 
 def _make_daemon(conn, protected_prefixes, interval=30):
@@ -238,3 +242,4 @@ def test_empty_queue_still_runs_detection_and_expiry(tmp_path):
     assert _flow_aggs_rows(conn) == []
     assert len(daemon.detector.calls) == 1
     assert daemon.bgp_manager.expire_calls == 1
+    assert daemon.bgp_manager.reconciliation_calls == 1

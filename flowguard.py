@@ -554,6 +554,7 @@ class FlowGuardDaemon:
         # roda mesmo sem tráfego no ciclo, para fechar ataques que já não estão mais ativos
         await self.detector.evaluate_cycle(now, proto_totals_bps, amp_totals_bps, syn_totals_bps)
         await self.bgp_manager.expire_cycle()
+        await self.bgp_manager.check_reconciliation()
 
     async def ai_report_loop(self) -> None:
         """Resumo executivo horário via IA dos ataques da última hora — só roda se

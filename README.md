@@ -83,6 +83,39 @@ análise sob demanda.
 
 ## Changelog
 
+### v1.33.0 — 2026-07-07 — Reconciliação BGP pós-restart do ExaBGP
+Pendência conhecida desde a revisão de `flow_aggs` (2026-07-02, ver changelog
+daquela versão), nunca implementada: se o `flowguard-speaker` (processo
+ExaBGP) reiniciar ou a sessão TCP cair e reconectar, o ExaBGP perde toda a
+RIB anunciada antes (sem graceful restart configurado) — mas `flowspec_rules`
+e o portal continuavam mostrando a mitigação como "ativa", porque nada
+detectava a reconexão pra re-anunciar as regras. Um restart do speaker
+(deploy, OOM, o que for) apagava silenciosamente toda proteção em vigor sem
+ninguém notar até o próximo ataque não ser bloqueado de verdade.
+
+`BgpManager.check_reconciliation()` (novo, chamado a cada ciclo de agregação
+— mesma cadência de `expire_cycle`, dentro de `_aggregate_once`) guarda o
+último `peer_state` visto por peer (`_last_peer_state`) e detecta a transição
+específica down/desconhecido → up. Na primeira checagem (cold start do
+daemon) só estabelece a baseline, deliberadamente sem re-anunciar nada — o
+alvo é pegar o ExaBGP reconectando ENQUANTO o daemon já está rodando, não
+"toda vez que o daemon sobe" (reiniciar o daemon sozinho não afeta a sessão
+BGP, que vive no processo separado do speaker). Detectada a transição,
+`_reconcile_peer` relê `flowspec_rules` ativas filtradas por aquele peer
+(regras de outro peer que não caiu ficam intocadas) e re-envia o mesmo
+`announce` de `ban()`/`flowspec_add()` — RTBH reconstrói o comando com
+`community`/`nexthop` de `config.yaml` (não persistidos na regra), FlowSpec
+usa a própria linha do banco. Falha ao re-anunciar uma regra individual
+loga erro e segue pras próximas, não derruba o ciclo.
+
+10 testes novos (`tests/test_bgp_reconciliation.py`): sem re-anúncio no cold
+start; re-anuncia na transição down→up; não re-anuncia com peer
+permanecendo up ou down; nenhuma regra ativa não gera round-trip à toa;
+com 2 peers, só as regras do peer que reconectou são re-anunciadas; RTBH
+monta `community`/`nexthop` corretamente; regra expirada/desativada não é
+re-anunciada; falha de envio loga e não propaga exceção. Cobertura de
+`bgp/manager.py`: 87% → 89%.
+
 ### v1.32.4 — 2026-07-07 — Testes pytest pra api/socket_server.py, bgp/speaker.py e flowguard-cli.py
 Fecha a leva de dívida técnica de cobertura iniciada na v1.32.2 — os 3 gaps
 restantes identificados na auditoria original.

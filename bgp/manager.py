@@ -30,6 +30,11 @@ LOG = logging.getLogger("flowguard.bgp")
 class BgpManager:
     def __init__(self, daemon):
         self.daemon = daemon
+        # último peer_state visto por peer (ver check_reconciliation) — None até a
+        # primeira checagem, pra nunca re-anunciar tudo logo no cold start do daemon
+        # (o alvo é detectar o ExaBGP reconectando ENQUANTO o daemon já está rodando,
+        # não "toda vez que o daemon sobe").
+        self._last_peer_state: dict[str, str | None] = {}
 
     def _bgp_cfg(self) -> dict:
         return self.daemon.config.get("bgp", {})
@@ -369,6 +374,61 @@ class BgpManager:
                 )
             else:
                 LOG.error("falha ao retirar regra expirada id=%s: %s", row["id"], resp.get("error"))
+
+    def _configured_peers(self) -> list[str]:
+        bgp_cfg = self._bgp_cfg()
+        peers = []
+        if bgp_cfg.get("peer_ip"):
+            peers.append("main")
+        for key in bgp_cfg:
+            if key.startswith("peer_ip_"):
+                peers.append(key[len("peer_ip_"):])
+        return peers
+
+    async def check_reconciliation(self) -> None:
+        """Detecta uma sessão BGP voltando de down/desconhecida pra up — sinal de que
+        o flowguard-speaker (processo ExaBGP) reiniciou (ou a sessão caiu e
+        reconectou). O ExaBGP não guarda RIB entre reinícios (sem graceful restart
+        configurado): tudo que o FlowGuard tinha anunciado antes se perde, mas
+        flowspec_rules/o portal continuam mostrando a mitigação como "ativa" — sem
+        isso, um restart do speaker apagava silenciosamente toda proteção em vigor.
+        Chamada a cada ciclo de agregação (mesmo motivo/frequência de expire_cycle)."""
+        for peer in self._configured_peers():
+            state = await self.status(peer)
+            current = state.get("peer_state")
+            previous = self._last_peer_state.get(peer)
+            self._last_peer_state[peer] = current
+            if previous is not None and previous != "up" and current == "up":
+                await self._reconcile_peer(peer)
+
+    async def _reconcile_peer(self, peer: str) -> None:
+        rules = await self.daemon.run_read_db(storage.list_flowspec_rules, active_only=True)
+        peer_rules = [r for r in rules if (r["peer"] if "peer" in r.keys() else "main") == peer]
+        if not peer_rules:
+            return
+        neighbor = self._peer_ip(peer)
+        bgp_cfg = self._bgp_cfg()
+        LOG.warning(
+            "sessão BGP '%s' reconectou — re-anunciando %d regra(s) ativa(s) "
+            "(RIB do ExaBGP não sobrevive a restart)", peer, len(peer_rules),
+        )
+        for row in peer_rules:
+            if row["action"] == "rtbh":
+                kind = "rtbh"
+                rule = {
+                    "dst_prefix": row["dst_prefix"],
+                    "community": bgp_cfg.get("rtbh_community"),
+                    "nexthop": bgp_cfg.get("nexthop_blackhole"),
+                }
+            else:
+                kind = "flowspec"
+                rule = dict(row)
+            resp = await self._send({"action": "announce", "kind": kind, "rule": rule, "neighbor": neighbor})
+            if resp.get("ok"):
+                LOG.info("regra id=%s re-anunciada após reconexão BGP (%s)", row["id"], peer)
+            else:
+                LOG.error("falha ao re-anunciar regra id=%s após reconexão BGP (%s): %s",
+                          row["id"], peer, resp.get("error"))
 
     async def withdraw_all(self) -> dict:
         """Retira todas as regras ativas — usado no shutdown gracioso do daemon e pelo
