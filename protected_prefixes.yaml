@@ -10,10 +10,8 @@
 - prefix: 177.86.17.0/24
   customer: POX Network Core
   capacity_mbps: 100000
-  auto_mitigate: true
-  notify_wa: true
-  thresholds:
-    ddos_bps_threshold: 35000000000
+  auto_mitigate: false
+  notify_wa: false
 - prefix: 177.86.18.0/24
   customer: POX Network Core
   capacity_mbps: 100000

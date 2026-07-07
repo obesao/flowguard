@@ -83,6 +83,11 @@ análise sob demanda.
 
 ## Changelog
 
+### v1.32.1 — 2026-07-07 — Ajuste operacional: 177.86.17.0/24 sai da auto-mitigação
+`auto_mitigate`/`notify_wa` desligados e `thresholds.ddos_bps_threshold`
+customizado removido (volta ao limiar global/template) pra
+`177.86.17.0/24` — decisão operacional do usuário, sem mudança de código.
+
 ### v1.32.0 — 2026-07-05 — Templates e ajuste fino de detecção via portal (replica o mecanismo do ClientGuard)
 Pedido do usuário: trazer pro FlowGuard o mesmo sistema de templates +
 ajuste fino de limiares já construído (e validado em produção) do lado do
