@@ -83,6 +83,55 @@ análise sob demanda.
 
 ## Changelog
 
+### v1.32.4 — 2026-07-07 — Testes pytest pra api/socket_server.py, bgp/speaker.py e flowguard-cli.py
+Fecha a leva de dívida técnica de cobertura iniciada na v1.32.2 — os 3 gaps
+restantes identificados na auditoria original.
+
+**`tests/test_socket_server_commands.py`** (61 testes): complementa
+`test_socket_server.py` (que já cobria só os comandos de ajuste fino de
+detecção) com os comandos "clássicos" — status/top/flows/attacks/
+attack_detail/rules (resolução de nome de equipamento por peer)/ban/unban/
+flowspec_add(dict e string via `parse_rule_string`)/flowspec_del/
+flowspec_del_all/rule_verify/dismiss_attack(s)/toggles/mitigation_profiles/
+whitelist_add-del/monitor_add-set-del-list/reload/stop/dashboard.
+`FakeDaemon` grava num SQLite real (mesmo padrão de `test_wa_notifications.py`)
+com um `FakeBgpManager` que só registra chamadas — o comportamento real de
+BGP já é coberto por `test_bgp_manager.py`, aqui o que importa é validação de
+entrada e delegação correta. `_dispatch`: comando desconhecido e exceção do
+handler tratados. Cobertura de `api/socket_server.py`: 37% → 88% (resto é
+`__init__`/`start`/`_handle_client`, wiring de socket/asyncio real).
+
+**`tests/test_bgp_speaker.py`** (18 testes): parsing das notificações do
+ExaBGP (`drain_exabgp_stdin`/`_handle_exabgp_message`/`get_neighbor_state`)
+sem processo real — mensagem `type=state` atualiza o estado do peer, tipos
+diferentes/campos ausentes são ignorados, JSON malformado no stdin não
+derruba o loop, cada peer mantém estado independente. `CommandHandler.handle`
+testado com um fake de socket (`recv`/`sendall`) — ação `status` retorna o
+estado dos peers, `announce`/`withdraw` monta o comando FlowSpec certo e
+manda pro stdout do ExaBGP (`send_to_exabgp`, capturado via `capsys`), `kind`
+desconhecido e payload malformado retornam erro sem crashar. Cobertura de
+`bgp/speaker.py`: 0% → 73% (resto é `main()`: config/threads/socket real).
+
+**`tests/test_cli_helpers.py`** (48 testes): helpers puros de formatação do
+`flowguard-cli.py` (importado via `importlib` por ter hífen no nome) —
+`fmt_bps`/`fmt_bytes`/`fmt_duration`/`proto_name`, `resolve_socket_path`
+(config ausente/sem a chave cai no default), `die_on_error` (`SystemExit`
+com mensagem), `_fmt_mitigation_action`, `_fmt_rule_mechanism`/
+`_fmt_rule_trigger`/`_resolve_device_name`, `_parse_set_args` (aceita `=`
+dentro do valor, rejeita par sem `=`). Atenção especial a
+`_fmt_activity_freshness`/`_is_genuinely_active`/`_fmt_attack_mitigation_cell`
+— a lógica por trás do bug real da v1.29.0 (selo "sem proteção" aparecendo
+pra ataque que já tinha parado de verdade): cobre fresco/parado/fechado/sem
+`ts_last_seen`, e que o alarme só aparece quando o ataque está
+GENUINAMENTE ativo. `cmd_*` (a maioria dos ~750 statements do arquivo) ficam
+de fora — são principalmente `send_command` (socket real) + montagem de
+tabelas `rich`, baixo valor por linha pra teste unitário e melhor validado
+rodando o CLI de verdade (já é como este projeto sempre validou o CLI).
+Cobertura de `flowguard-cli.py`: 0% → 18%.
+
+Cobertura total do projeto (todos os módulos): 59% → 75%. Suíte completa:
+240 → 367 testes, todos passando, sem regressão.
+
 ### v1.32.3 — 2026-07-07 — Testes pytest pra FlowGuardDaemon._aggregate_once (core da agregação)
 Sequência da v1.32.2: `_aggregate_once` (flowguard.py) é o método com mais
 histórico de bugs reais deste projeto (explosão de flow_aggs por porta
