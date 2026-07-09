@@ -85,10 +85,32 @@ CREATE TABLE IF NOT EXISTS prefix_baseline (
   updated_at  INTEGER NOT NULL
 );
 
+-- port scan de fora pra dentro (src_ip externo -> prefixo protegido). Diferente de
+-- `attacks` (chave dst_prefix+attack_type, 1 condição por prefixo): aqui a chave
+-- inclui src_ip porque vários atacantes distintos podem escanear o MESMO prefixo ao
+-- mesmo tempo, cada um rastreado/bloqueado/escalado independentemente (ver
+-- analyzer/engine.py::evaluate_scan_cycle).
+CREATE TABLE IF NOT EXISTS port_scan_offenders (
+  id             INTEGER PRIMARY KEY,
+  dst_prefix     TEXT NOT NULL,
+  src_ip         TEXT NOT NULL,
+  scan_type      TEXT NOT NULL,   -- 'horizontal' | 'vertical'
+  ts_start       INTEGER NOT NULL,
+  ts_last_seen   INTEGER NOT NULL,
+  ts_end         INTEGER,          -- NULL enquanto ativo, mesmo padrão de attacks.ts_end
+  dst_count      INTEGER NOT NULL, -- N hosts distintos (horizontal) ou N portas distintas (vertical)
+  pps_peak       INTEGER NOT NULL,
+  mitigated      INTEGER DEFAULT 0,
+  flowspec_rule_id INTEGER,
+  dismissed      INTEGER DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_flow_aggs_ts ON flow_aggs(ts);
 CREATE INDEX IF NOT EXISTS idx_flow_aggs_prefix ON flow_aggs(dst_prefix, ts);
 CREATE INDEX IF NOT EXISTS idx_attacks_ts ON attacks(ts_start);
 CREATE INDEX IF NOT EXISTS idx_attacks_active ON attacks(ts_end, dismissed);
+CREATE INDEX IF NOT EXISTS idx_scan_offenders_key ON port_scan_offenders(dst_prefix, src_ip, scan_type);
+CREATE INDEX IF NOT EXISTS idx_scan_offenders_active ON port_scan_offenders(ts_end, dismissed);
 """
 
 
@@ -378,6 +400,18 @@ def list_expired_flowspec_rules(conn: sqlite3.Connection, now: int) -> list[dict
     return [dict(r) for r in rows]
 
 
+def count_recent_flowspec_blocks(conn: sqlite3.Connection, src_prefix: str, since_ts: int) -> int:
+    """Quantas vezes src_prefix (ex: "1.2.3.4/32") já foi anunciado em flowspec_rules
+    desde since_ts — fonte de histórico pro escalonamento progressivo (ver
+    bgp/escalation.py). flowspec_rules nunca deleta linha (só active=0), então isso
+    inclui bloqueios já expirados/revogados, não só os ainda em vigor."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM flowspec_rules WHERE src_prefix = ? AND created_at >= ?",
+        (src_prefix, since_ts),
+    ).fetchone()
+    return row["n"] if row else 0
+
+
 _PROTO_NAMES = {6: "tcp", 17: "udp", 1: "icmp"}
 
 # janelas de zoom do gráfico histórico -> tamanho de balde que mantém a contagem de
@@ -650,6 +684,60 @@ def apply_attack_changes(conn: sqlite3.Connection, to_insert: list[dict],
         )
     conn.commit()
     return inserted_ids
+
+
+def list_scan_offenders(conn: sqlite3.Connection, active_only: bool = True) -> list[dict]:
+    """Listagem pro portal/CLI (ver socket_server._cmd_scan_offenders) — diferente de
+    list_open_scan_offenders_by_key (dict por chave, usado pela engine de detecção)."""
+    if active_only:
+        rows = conn.execute(
+            "SELECT * FROM port_scan_offenders WHERE ts_end IS NULL ORDER BY ts_start DESC"
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM port_scan_offenders ORDER BY ts_start DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_open_scan_offenders_by_key(conn: sqlite3.Connection) -> dict[tuple, dict]:
+    """Todos os offenders de scan em aberto, de uma vez — mesmo motivo de
+    list_open_attacks_by_key (evita 1 SELECT por (prefixo, src_ip, tipo) a cada ciclo)."""
+    rows = conn.execute("SELECT * FROM port_scan_offenders WHERE ts_end IS NULL").fetchall()
+    return {(r["dst_prefix"], r["src_ip"], r["scan_type"]): dict(r) for r in rows}
+
+
+def apply_scan_offender_changes(conn: sqlite3.Connection, to_insert: list[dict],
+                                 to_update: list[tuple], to_close: list[tuple]) -> list[int]:
+    """Mesma estratégia de apply_attack_changes: 1 transação por ciclo em vez de 1
+    commit por (prefixo, src_ip, tipo) avaliado. Retorna os ids inseridos, na mesma
+    ordem de to_insert, pra casar com to_notify por posição."""
+    inserted_ids: list[int] = []
+    for item in to_insert:
+        cur = conn.execute(
+            """INSERT INTO port_scan_offenders
+               (dst_prefix, src_ip, scan_type, ts_start, ts_last_seen, dst_count, pps_peak)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (item["dst_prefix"], item["src_ip"], item["scan_type"], item["ts_start"],
+             item["ts_start"], item["dst_count"], item["pps_peak"]),
+        )
+        inserted_ids.append(cur.lastrowid)
+    for offender_id, dst_count, pps, now in to_update:
+        conn.execute(
+            "UPDATE port_scan_offenders SET dst_count = MAX(dst_count, ?), pps_peak = MAX(pps_peak, ?), "
+            "ts_last_seen = ? WHERE id = ?",
+            (dst_count, pps, now, offender_id),
+        )
+    for offender_id, ts_end in to_close:
+        conn.execute("UPDATE port_scan_offenders SET ts_end = ? WHERE id = ?", (ts_end, offender_id))
+    conn.commit()
+    return inserted_ids
+
+
+def mark_scan_offender_mitigated(conn: sqlite3.Connection, offender_id: int, flowspec_rule_id: int) -> None:
+    conn.execute(
+        "UPDATE port_scan_offenders SET mitigated = 1, flowspec_rule_id = ? WHERE id = ?",
+        (flowspec_rule_id, offender_id),
+    )
+    conn.commit()
 
 
 def close_stale_attacks(conn: sqlite3.Connection, stale_s: int) -> list[dict]:

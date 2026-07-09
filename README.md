@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.32.0**
+**Versão atual: v1.35.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,60 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.35.0 — 2026-07-08 — Detecção de port scan inbound + bloqueio progressivo por reincidência
+
+Duas lacunas fechadas nesta leva: (1) `flowguard.md` documentava "Port Scan
+Horizontal/Vertical" desde o spec original, nunca implementado — só existiam
+detectores volumétricos (`ddos_volumetrico`, 5 amplificações, `syn_flood`,
+`anomalia_baseline`); (2) bloqueio (RTBH/FlowSpec) sempre usava a mesma
+duração, sem memória de reincidência — pedido do usuário: se o mesmo IP
+externo repete a ofensa, o bloqueio cresce progressivamente (estilo fail2ban).
+
+**Detector de scan inbound** (`analyzer/engine.py::evaluate_scan_cycle`, novo):
+horizontal (1 src_ip externo -> N hosts distintos do prefixo, mesma porta) e
+vertical (1 src_ip -> N portas distintas do mesmo host). Diferente dos
+detectores existentes (chave `dst_prefix + attack_type`, pensados pra
+fenômeno prefix-wide), scan é por-atacante — várias origens podem escanear o
+mesmo prefixo ao mesmo tempo, cada uma rastreada/bloqueada independentemente.
+Nova tabela `port_scan_offenders` (`collector/storage.py`), chave
+`(dst_prefix, src_ip, scan_type)`, mesmo padrão de `attacks` (debounce,
+batch write numa transação só). Acumulador `scan_totals` novo em
+`flowguard.py::_aggregate_once` (mesmo bloco do `syn_totals`), usando
+`rec.dst_port` CRU — não o `bucket_dst_port` já zerado pra portas
+efêmeras, que é justamente onde a maioria de um scan real cai. Cap de
+cardinalidade (`scan_detection.max_tracked_src_ips_per_cycle`, default 5000)
+evita crescimento descontrolado sob um scan distribuído de muitas origens.
+Bloqueio automático (quando ligado) chama `BgpManager.flowspec_add` direto
+com `src_prefix=<atacante>/32` — não `auto_mitigate()` (que é dst_prefix-shaped,
+mitigaria a vítima, não o atacante). Novo `scan_detection.yaml`
+(`enabled`/`horizontal_enabled`/`vertical_enabled`/`horizontal_hosts`/
+`vertical_ports`/`auto_block`/`max_tracked_src_ips_per_cycle` — limiares são
+placeholders, calibrar contra tráfego real antes de confiar no sinal) +
+`mitigation_profiles.port_scan_horizontal/vertical` (só `auto_mode`, kind é
+sempre discard por design).
+
+**Bloqueio progressivo** (`bgp/escalation.py`, novo): TTL do próximo
+bloqueio = `base_ttl_s * factor ^ min(reincidências, max_steps)`, até o teto
+`max_ttl_s`. Reincidência contada via `flowspec_rules` (nunca deleta linha,
+histórico completo já existia — só faltava consultar). Novo
+`escalation.yaml`. Só se aplica ao detector de scan — `ddos_volumetrico`/
+amplificação/`syn_flood`/`anomalia_baseline` mitigam a vítima (RTBH/discard
+no prefixo), sem um único atacante pra escalar contra.
+
+Socket (`_cmd_scan_detection_cfg(_set)`, `_cmd_escalation_cfg(_set)`,
+`_cmd_scan_offenders`), CLI (`flowguard-cli scan list|set|offenders`,
+`escalation list|set`) e portal (novas seções "Detecção de Varredura de
+Portas", "Bloqueio Progressivo" e "Scanners Detectados" na aba
+Configuração) seguem 1:1 o padrão já existente de `detection_cfg`/
+`mitigation_profiles`. 23 testes novos (`test_scan_detection.py`,
+`test_bgp_escalation.py`), 412 no total, todos passando.
+
+**Rollout recomendado**: subir com `scan_detection.auto_block: false`,
+observar 24-48h calibrando `horizontal_hosts`/`vertical_ports` contra
+tráfego real, só então ligar `mitigation_profiles.port_scan_*.auto_mode`.
+Escalonamento pode subir junto desde o início (só afeta duração de um
+bloqueio que já ia acontecer, não é risco adicional por si só).
 
 ### v1.34.0 — 2026-07-07 — Limiar de amplificação próprio + sintaxe do flowspec add + limpeza de config morto
 Fecha as outras 3 pendências técnicas antigas (2026-07-02, revisão de

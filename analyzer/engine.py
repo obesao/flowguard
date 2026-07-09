@@ -19,6 +19,7 @@ import ipaddress
 import logging
 import math
 
+from bgp import escalation
 from collector import storage
 
 LOG = logging.getLogger("flowguard.detect")
@@ -59,6 +60,9 @@ class DetectionEngine:
         self.daemon = daemon
         # (dst_prefix, attack_type) -> timestamp em que a condição começou a ser observada
         self._pending: dict[tuple, float] = {}
+        # (dst_prefix, src_ip, scan_type) -> idem, namespace separado do de cima (chave
+        # de formato diferente, e port_scan_offenders é uma tabela própria, não `attacks`)
+        self._pending_scan: dict[tuple, float] = {}
 
     async def evaluate_cycle(self, now: int, proto_totals: dict, amp_totals: dict, syn_totals: dict | None = None) -> None:
         syn_totals = syn_totals or {}
@@ -258,6 +262,112 @@ class DetectionEngine:
             self._pending.pop(key, None)
             if existing:
                 to_close.append((existing["id"], now, existing["dst_prefix"], existing["ts_start"]))
+
+
+    async def evaluate_scan_cycle(self, now: int, scan_totals: dict, interval: int) -> None:
+        """Port scan de fora pra dentro: 1 src_ip externo -> N hosts distintos do
+        prefixo (horizontal) ou -> N portas distintas do mesmo host (vertical).
+        scan_totals vem já montado por flowguard.py::_aggregate_once, chave
+        (dst_prefix, src_ip) -> {"dst_ips": set, "dst_ports": {dst_ip: set(portas)},
+        "packets": int}. Ver Parte A do plano desta feature pra motivo da tabela
+        própria (port_scan_offenders) em vez de reusar `attacks`."""
+        cfg = self.daemon.config
+        scan_cfg = cfg.get("scan_detection", {})
+        if not scan_cfg.get("enabled", True):
+            return
+        whitelist = cfg.get("whitelist", [])
+        mitigation_profiles = cfg.get("mitigation_profiles", {})
+        escalation_cfg = cfg.get("escalation", {})
+        min_duration = cfg.get("detection", {}).get("min_attack_duration_s", 10)
+        horizontal_hosts = scan_cfg.get("horizontal_hosts", 20)
+        vertical_ports = scan_cfg.get("vertical_ports", 50)
+
+        open_offenders = await self.daemon.run_read_db(storage.list_open_scan_offenders_by_key)
+
+        to_insert: list[dict] = []
+        to_update: list[tuple] = []
+        to_close: list[tuple] = []
+        to_notify: list[tuple] = []
+        seen_keys: set[tuple] = set()
+
+        for (prefix, src_ip), st in scan_totals.items():
+            if _is_whitelisted(f"{src_ip}/32", whitelist):
+                continue
+            pps = int(st["packets"] / interval) if interval else 0
+            n_hosts = len(st["dst_ips"])
+            max_ports = max((len(ports) for ports in st["dst_ports"].values()), default=0)
+
+            if scan_cfg.get("horizontal_enabled", True):
+                key = (prefix, src_ip, "horizontal")
+                seen_keys.add(key)
+                self._evaluate_scan(now, key, n_hosts >= horizontal_hosts, n_hosts, pps,
+                                     min_duration, open_offenders, to_insert, to_update, to_close, to_notify)
+            if scan_cfg.get("vertical_enabled", True):
+                key = (prefix, src_ip, "vertical")
+                seen_keys.add(key)
+                self._evaluate_scan(now, key, max_ports >= vertical_ports, max_ports, pps,
+                                     min_duration, open_offenders, to_insert, to_update, to_close, to_notify)
+
+        # src_ip que não mandou NENHUM pacote pro prefixo neste ciclo não aparece em
+        # scan_totals — sem isso, um offender aberto nunca fecharia sozinho quando o
+        # atacante simplesmente para (diferente de _evaluate, chamado sempre pra todo
+        # (prefixo,tipo) mesmo sem tráfego; aqui só iteramos o que apareceu no ciclo).
+        for key, row in open_offenders.items():
+            if key in seen_keys:
+                continue
+            self._pending_scan.pop(key, None)
+            to_close.append((row["id"], now))
+
+        inserted_ids: list[int] = []
+        if to_insert or to_update or to_close:
+            inserted_ids = await self.daemon.run_db(
+                storage.apply_scan_offender_changes, self.daemon.conn, to_insert, to_update, to_close
+            )
+
+        for offender_id, (prefix, src_ip, scan_type, dst_count, pps) in zip(inserted_ids, to_notify):
+            unit = "hosts distintos" if scan_type == "horizontal" else "portas distintas"
+            LOG.warning("SCAN DETECTADO: %s de %s contra %s — %d %s, %s pps",
+                        scan_type, src_ip, prefix, dst_count, unit, f"{pps:,}".replace(",", "."))
+
+            auto_mode = (mitigation_profiles.get(f"port_scan_{scan_type}") or {}).get("auto_mode", "off")
+            if auto_mode != "off" and scan_cfg.get("auto_block", False):
+                self.daemon.fire_and_forget(
+                    self._auto_block_scanner(offender_id, src_ip, scan_type, escalation_cfg),
+                    f"bloqueio automático de scan #{offender_id} ({src_ip})",
+                )
+
+    def _evaluate_scan(self, now, key, triggered, dst_count, pps, min_duration,
+                        open_offenders, to_insert, to_update, to_close, to_notify) -> None:
+        existing = open_offenders.get(key)
+        if triggered:
+            first_seen = self._pending_scan.setdefault(key, now)
+            if (now - first_seen) >= min_duration:
+                if existing:
+                    to_update.append((existing["id"], dst_count, pps, now))
+                else:
+                    prefix, src_ip, scan_type = key
+                    to_insert.append({"dst_prefix": prefix, "src_ip": src_ip, "scan_type": scan_type,
+                                       "ts_start": now, "dst_count": dst_count, "pps_peak": pps})
+                    to_notify.append((prefix, src_ip, scan_type, dst_count, pps))
+        else:
+            self._pending_scan.pop(key, None)
+            if existing:
+                to_close.append((existing["id"], now))
+
+    async def _auto_block_scanner(self, offender_id: int, src_ip: str, scan_type: str,
+                                   escalation_cfg: dict) -> None:
+        """flowspec_add direto (não BgpManager.auto_mitigate, que é dst_prefix-shaped
+        e mitigaria a VÍTIMA) — scan precisa bloquear o src_ip do ATACANTE."""
+        ttl = await self.daemon.run_read_db(escalation.next_ttl_s, src_ip, escalation_cfg)
+        resp = await self.daemon.bgp_manager.flowspec_add(
+            {"src_prefix": f"{src_ip}/32", "action": "discard", "label": f"FlowGuard auto: port_scan_{scan_type}"},
+            attack_id=None, ttl_s=ttl, origin="flowguard", peer="main", trigger_type="auto",
+        )
+        if resp.get("ok") and resp.get("rule_id") is not None:
+            await self.daemon.run_db(storage.mark_scan_offender_mitigated, self.daemon.conn,
+                                      offender_id, resp["rule_id"])
+        else:
+            LOG.error("falha ao bloquear scanner %s (offender #%s): %s", src_ip, offender_id, resp.get("error"))
 
 
 def to_close_log(to_close: list[tuple], open_attacks: dict[tuple, dict]):

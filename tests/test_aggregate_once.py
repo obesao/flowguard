@@ -38,9 +38,13 @@ def _rec(src_ip="200.1.2.3", dst_ip="177.86.16.10", protocol=6, src_port=54321,
 class RecordingDetector:
     def __init__(self):
         self.calls = []
+        self.scan_calls = []
 
     async def evaluate_cycle(self, now, proto_totals_bps, amp_totals_bps, syn_totals_bps):
         self.calls.append((now, proto_totals_bps, amp_totals_bps, syn_totals_bps))
+
+    async def evaluate_scan_cycle(self, now, scan_totals, interval):
+        self.scan_calls.append((now, scan_totals, interval))
 
 
 class RecordingBgpManager:

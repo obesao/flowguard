@@ -17,6 +17,8 @@ DEFAULT_DETECTION_TOGGLES_FILE = "/root/flowguard/detection_toggles.yaml"
 DEFAULT_MITIGATION_PROFILES_FILE = "/root/flowguard/mitigation_profiles.yaml"
 DEFAULT_DETECTION_TEMPLATES_FILE = "/root/flowguard/detection_templates.yaml"
 DEFAULT_DETECTION_OVERRIDES_FILE = "/root/flowguard/detection_overrides.yaml"
+DEFAULT_SCAN_DETECTION_FILE = "/root/flowguard/scan_detection.yaml"
+DEFAULT_ESCALATION_FILE = "/root/flowguard/escalation.yaml"
 
 
 def load_config(path: str) -> dict:
@@ -29,12 +31,16 @@ def load_config(path: str) -> dict:
     mp_path = cfg.get("mitigation_profiles_file", DEFAULT_MITIGATION_PROFILES_FILE)
     dtpl_path = cfg.get("detection_templates_file", DEFAULT_DETECTION_TEMPLATES_FILE)
     dov_path = cfg.get("detection_overrides_file", DEFAULT_DETECTION_OVERRIDES_FILE)
+    scan_path = cfg.get("scan_detection_file", DEFAULT_SCAN_DETECTION_FILE)
+    esc_path = cfg.get("escalation_file", DEFAULT_ESCALATION_FILE)
 
     cfg["protected_prefixes"] = load_yaml_list(pp_path)
     cfg["whitelist"] = load_yaml_list(wl_path)
     cfg["detection_toggles"] = load_feature_toggles(dt_path)
     cfg["mitigation_profiles"] = load_mitigation_profiles(mp_path)
     cfg["detection_templates"] = load_detection_templates(dtpl_path)
+    cfg["scan_detection"] = load_scan_detection(scan_path)
+    cfg["escalation"] = load_escalation(esc_path)
     # ajuste fino via portal/CLI, aplicado por cima do detection.* já presente no
     # config.yaml — reload_config() do daemon recarrega load_config() inteiro do
     # zero, então isso aplica automaticamente sem precisar de nenhum estado extra
@@ -47,6 +53,8 @@ def load_config(path: str) -> dict:
     cfg["_mitigation_profiles_file"] = mp_path
     cfg["_detection_templates_file"] = dtpl_path
     cfg["_detection_overrides_file"] = dov_path
+    cfg["_scan_detection_file"] = scan_path
+    cfg["_escalation_file"] = esc_path
     return cfg
 
 
@@ -171,6 +179,14 @@ DEFAULT_MITIGATION_PROFILES = {
     "cldap_amp": {"kind": "discard", "rate_limit_mbps": 50, "auto_mode": "off"},
     "syn_flood": {"kind": "discard", "rate_limit_mbps": 50, "auto_mode": "off"},
     "anomalia_baseline": {"kind": "rtbh", "rate_limit_mbps": 50, "auto_mode": "off"},
+    # port_scan_*: só "auto_mode" é editável (sem "kind") — o bloqueio de scan é
+    # sempre discard por src_ip do ATACANTE (flowspec_add direto em
+    # analyzer/engine.py::evaluate_scan_cycle), nunca RTBH/rate_limit do prefixo, que
+    # não fariam sentido pra esse tipo de ataque. auto_mode aqui é só a trava de
+    # "liga sozinho": off por padrão, operador liga depois de validar sem falso
+    # positivo (ver scan_detection.yaml pros limiares de detecção em si).
+    "port_scan_horizontal": {"auto_mode": "off"},
+    "port_scan_vertical": {"auto_mode": "off"},
 }
 
 MITIGATION_PROFILES_HEADER = (
@@ -390,5 +406,144 @@ def save_detection_overrides(path: str, changes: dict) -> dict:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(DETECTION_OVERRIDES_HEADER.rstrip() + "\n")
+        yaml.safe_dump(current, fh, sort_keys=False, allow_unicode=True)
+    return current
+
+
+# --- scan_detection.yaml: detecção de port scan de fora pra dentro -----------------
+# Espelha detect_scan_horizontal/detect_scan_vertical do ClientGuard, mas no sentido
+# oposto (externo -> prefixo protegido). horizontal_hosts/vertical_ports são
+# PLACEHOLDERS — sem dado real de produção pra calibrar ainda, mesmo aviso que
+# config.yaml do ClientGuard já documenta pros limiares dele: ajustar depois de
+# observar falso positivo real (ver seção "Rollout" do plano desta feature).
+# auto_block é a trava PRÓPRIA deste detector — separada de
+# mitigation_profiles.<port_scan_*>.auto_mode (que também precisa estar != "off"
+# pra bloquear de fato) e de protected_prefixes.<prefixo>.auto_mitigate (que é sobre
+# proteger a VÍTIMA, conceito diferente de bloquear o atacante).
+DEFAULT_SCAN_DETECTION = {
+    "enabled": True,
+    "horizontal_enabled": True,
+    "vertical_enabled": True,
+    "horizontal_hosts": 20,
+    "vertical_ports": 50,
+    "max_tracked_src_ips_per_cycle": 5000,
+    "auto_block": False,
+}
+
+SCAN_DETECTION_HEADER = (
+    "# scan_detection.yaml — detecção de port scan de fora pra dentro (IP externo\n"
+    "# varrendo um prefixo protegido). horizontal_hosts/vertical_ports são placeholders,\n"
+    "# calibrar contra tráfego real antes de confiar no sinal. auto_block liga o\n"
+    "# bloqueio automático (FlowSpec discard do src_ip do atacante) — também precisa de\n"
+    "# mitigation_profiles.<port_scan_horizontal|vertical>.auto_mode != 'off'.\n"
+    "# Editável via portal (aba Configuração > FlowGuard) ou flowguard-cli scan set."
+)
+
+
+def load_scan_detection(path: str) -> dict:
+    merged = dict(DEFAULT_SCAN_DETECTION)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except FileNotFoundError:
+        data = None
+    if data:
+        merged.update({k: v for k, v in data.items() if k in DEFAULT_SCAN_DETECTION})
+    return merged
+
+
+def _validate_scan_detection_changes(changes: dict) -> None:
+    unknown = sorted(k for k in changes if k not in DEFAULT_SCAN_DETECTION)
+    if unknown:
+        raise ValueError(f"chave(s) desconhecida(s): {', '.join(unknown)}")
+    for key in ("horizontal_hosts", "vertical_ports", "max_tracked_src_ips_per_cycle"):
+        if key in changes:
+            try:
+                value = int(changes[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} precisa ser um inteiro")
+            if value <= 0:
+                raise ValueError(f"{key} precisa ser positivo")
+    for key in ("enabled", "horizontal_enabled", "vertical_enabled", "auto_block"):
+        if key in changes and not isinstance(changes[key], bool):
+            raise ValueError(f"{key} precisa ser true/false")
+
+
+def save_scan_detection(path: str, changes: dict) -> dict:
+    _validate_scan_detection_changes(changes)
+    current = load_scan_detection(path)
+    current.update(changes)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(SCAN_DETECTION_HEADER.rstrip() + "\n")
+        yaml.safe_dump(current, fh, sort_keys=False, allow_unicode=True)
+    return current
+
+
+# --- escalation.yaml: bloqueio progressivo por reincidência (estilo fail2ban) ------
+# Só afeta a DURAÇÃO de um bloqueio que já ia acontecer de qualquer forma (scan
+# detection, Parte A) — não é um mecanismo de bloqueio novo. Reincidência é contada
+# via storage.count_recent_flowspec_blocks (histórico de flowspec_rules por
+# src_prefix, nunca deletado) — ver bgp/escalation.py::next_ttl_s.
+DEFAULT_ESCALATION = {
+    "enabled": True,
+    "tracking_window_s": 604800,   # 7 dias — reincidência conta dentro dessa janela
+    "base_ttl_s": 3600,            # 1ª ofensa: 1h
+    "factor": 4,                   # cada reincidência multiplica a duração por isso
+    "max_ttl_s": 604800,           # teto: 7 dias (nunca "permanente" via automação)
+    "max_steps": 5,                # trava no teto depois de N reincidências
+}
+
+ESCALATION_HEADER = (
+    "# escalation.yaml — bloqueio progressivo por reincidência (estilo fail2ban) pro\n"
+    "# detector de port scan (Parte A). Cada vez que o MESMO src_ip é bloqueado de novo\n"
+    "# dentro de tracking_window_s, a duração do próximo bloqueio cresce (base_ttl_s *\n"
+    "# factor ^ N reincidências), até o teto max_ttl_s. Editável via portal (aba\n"
+    "# Configuração > FlowGuard) ou flowguard-cli escalation set."
+)
+
+
+def load_escalation(path: str) -> dict:
+    merged = dict(DEFAULT_ESCALATION)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except FileNotFoundError:
+        data = None
+    if data:
+        merged.update({k: v for k, v in data.items() if k in DEFAULT_ESCALATION})
+    return merged
+
+
+def _validate_escalation_changes(changes: dict) -> None:
+    unknown = sorted(k for k in changes if k not in DEFAULT_ESCALATION)
+    if unknown:
+        raise ValueError(f"chave(s) desconhecida(s): {', '.join(unknown)}")
+    if "enabled" in changes and not isinstance(changes["enabled"], bool):
+        raise ValueError("enabled precisa ser true/false")
+    for key in ("tracking_window_s", "base_ttl_s", "max_ttl_s", "max_steps"):
+        if key in changes:
+            try:
+                value = int(changes[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} precisa ser um inteiro")
+            if value <= 0:
+                raise ValueError(f"{key} precisa ser positivo")
+    if "factor" in changes:
+        try:
+            factor = float(changes["factor"])
+        except (TypeError, ValueError):
+            raise ValueError("factor precisa ser numérico")
+        if factor <= 1:
+            raise ValueError("factor precisa ser maior que 1 (senão não escalona)")
+
+
+def save_escalation(path: str, changes: dict) -> dict:
+    _validate_escalation_changes(changes)
+    current = load_escalation(path)
+    current.update(changes)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(ESCALATION_HEADER.rstrip() + "\n")
         yaml.safe_dump(current, fh, sort_keys=False, allow_unicode=True)
     return current

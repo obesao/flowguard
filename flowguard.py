@@ -450,6 +450,16 @@ class FlowGuardDaemon:
         # totais de SYN "puro" por prefixo (TCP com SYN setado e ACK não setado) —
         # usados pela detecção de SYN flood dedicada
         syn_totals: dict[str, dict] = defaultdict(lambda: {"bytes": 0, "packets": 0})
+        # port scan de fora pra dentro: por (prefixo protegido, src_ip externo), hosts
+        # distintos tocados (horizontal) e portas distintas por host (vertical) — usa
+        # rec.dst_port CRU, não o bucket_dst_port já zerado pra portas efêmeras (a
+        # imensa maioria de um scan real cai justamente nessa faixa). Só rastreado
+        # dentro de prefixo DE FATO protegido, nunca no fallback — mantém a
+        # cardinalidade limitada a "quem tocou minha rede", não "toda a internet".
+        scan_totals: dict[tuple, dict] = {}
+        scan_cfg = self.config.get("scan_detection", {})
+        scan_max_tracked = scan_cfg.get("max_tracked_src_ips_per_cycle", 5000)
+        scan_cap_hit = False
 
         for rec in records:
             # a NE8000 exporta netstream inbound+outbound em toda interface, então cada
@@ -486,6 +496,26 @@ class FlowGuardDaemon:
                 st = syn_totals[prefix]
                 st["bytes"] += rec.real_bytes
                 st["packets"] += rec.real_packets
+
+            if matched_dst_prefix is not None:
+                scan_key = (matched_dst_prefix, rec.src_ip)
+                sc = scan_totals.get(scan_key)
+                if sc is None:
+                    if len(scan_totals) >= scan_max_tracked:
+                        if not scan_cap_hit:
+                            LOG.warning(
+                                "scan_detection: limite de %d src_ips rastreados/ciclo atingido em %s — "
+                                "novos src_ips não rastreados até o próximo ciclo",
+                                scan_max_tracked, matched_dst_prefix,
+                            )
+                            scan_cap_hit = True
+                    else:
+                        sc = {"dst_ips": set(), "dst_ports": defaultdict(set), "packets": 0}
+                        scan_totals[scan_key] = sc
+                if sc is not None:
+                    sc["dst_ips"].add(rec.dst_ip)
+                    sc["dst_ports"][rec.dst_ip].add(rec.dst_port)
+                    sc["packets"] += rec.real_packets
 
             # tráfego de saída (cliente protegido como origem) — só quando o src
             # cai num prefixo protegido; sem fallback pra não explodir cardinalidade
@@ -553,6 +583,7 @@ class FlowGuardDaemon:
         }
         # roda mesmo sem tráfego no ciclo, para fechar ataques que já não estão mais ativos
         await self.detector.evaluate_cycle(now, proto_totals_bps, amp_totals_bps, syn_totals_bps)
+        await self.detector.evaluate_scan_cycle(now, scan_totals, interval)
         await self.bgp_manager.expire_cycle()
         await self.bgp_manager.check_reconciliation()
 

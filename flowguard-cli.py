@@ -533,6 +533,94 @@ def cmd_mitigation_rtbh_ttl(args: argparse.Namespace, sock_path: str) -> None:
     _print_simple(resp, ok_message=f"duração padrão do RTBH = {ttl_s}s (~{args.minutes:.0f} min)")
 
 
+def cmd_scan_list(args: argparse.Namespace, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "scan_detection_cfg"})
+    die_on_error(resp)
+    cfg = resp["scan_detection"]
+    table = Table(title="Detecção de port scan (fora -> prefixo protegido)")
+    table.add_column("Chave")
+    table.add_column("Valor")
+    for key, value in cfg.items():
+        table.add_row(key, str(value))
+    console.print(table)
+    console.print("[dim]auto_block também precisa de mitigation_profiles.port_scan_horizontal/vertical."
+                   "auto_mode != off (flowguard-cli mitigation set)[/dim]")
+
+
+def cmd_scan_set(args: argparse.Namespace, sock_path: str) -> None:
+    fields: dict = {}
+    for name, key in (
+        ("enabled", "enabled"), ("horizontal_enabled", "horizontal_enabled"),
+        ("vertical_enabled", "vertical_enabled"), ("auto_block", "auto_block"),
+    ):
+        value = getattr(args, name)
+        if value is not None:
+            fields[key] = value == "on"
+    for name, key in (
+        ("horizontal_hosts", "horizontal_hosts"), ("vertical_ports", "vertical_ports"),
+        ("max_tracked_src_ips_per_cycle", "max_tracked_src_ips_per_cycle"),
+    ):
+        value = getattr(args, name)
+        if value is not None:
+            fields[key] = value
+    if not fields:
+        console.print("[red]informe pelo menos uma opção (--enabled/--horizontal-hosts/--vertical-ports/...)[/red]")
+        return
+    resp = send_command(sock_path, {"cmd": "scan_detection_cfg_set", "changes": fields})
+    _print_simple(resp, ok_message=f"scan_detection: {fields}")
+
+
+def cmd_scan_offenders(args: argparse.Namespace, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "scan_offenders", "history": args.history})
+    die_on_error(resp)
+    table = Table(title="Scanners detectados" + (" (histórico)" if args.history else " (ativos)"))
+    table.add_column("Prefixo")
+    table.add_column("Src IP")
+    table.add_column("Tipo")
+    table.add_column("Contagem")
+    table.add_column("Bloqueado")
+    table.add_column("Início")
+    for row in resp["offenders"]:
+        table.add_row(
+            row["dst_prefix"], row["src_ip"], row["scan_type"], str(row["dst_count"]),
+            "sim" if row["mitigated"] else "não",
+            time.strftime("%d/%m %H:%M", time.localtime(row["ts_start"])),
+        )
+    console.print(table)
+
+
+_AUTO_ONOFF = ["on", "off"]
+
+
+def cmd_escalation_list(args: argparse.Namespace, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "escalation_cfg"})
+    die_on_error(resp)
+    cfg = resp["escalation"]
+    table = Table(title="Bloqueio progressivo por reincidência (scan)")
+    table.add_column("Chave")
+    table.add_column("Valor")
+    for key, value in cfg.items():
+        table.add_row(key, str(value))
+    console.print(table)
+
+
+def cmd_escalation_set(args: argparse.Namespace, sock_path: str) -> None:
+    fields: dict = {}
+    if args.enabled is not None:
+        fields["enabled"] = args.enabled == "on"
+    for name in ("tracking_window_s", "base_ttl_s", "max_ttl_s", "max_steps"):
+        value = getattr(args, name)
+        if value is not None:
+            fields[name] = value
+    if args.factor is not None:
+        fields["factor"] = args.factor
+    if not fields:
+        console.print("[red]informe pelo menos uma opção (--enabled/--base-ttl-s/--factor/...)[/red]")
+        return
+    resp = send_command(sock_path, {"cmd": "escalation_cfg_set", "changes": fields})
+    _print_simple(resp, ok_message=f"escalation: {fields}")
+
+
 def cmd_whitelist_add(args: argparse.Namespace, sock_path: str) -> None:
     resp = send_command(sock_path, {"cmd": "whitelist_add", "prefix": args.prefix})
     _print_simple(resp)
@@ -998,6 +1086,38 @@ def main() -> None:
     p_mitigation_rtbh_ttl.add_argument("minutes", type=float, nargs="?",
                                         help="nova duração em minutos (omitir só mostra o valor atual)")
     p_mitigation_rtbh_ttl.set_defaults(func=cmd_mitigation_rtbh_ttl)
+
+    p_scan = sub.add_parser("scan", help="detecção de port scan de fora pra dentro")
+    scan_sub = p_scan.add_subparsers(dest="scan_action", required=True)
+    scan_sub.add_parser("list").set_defaults(func=cmd_scan_list)
+    p_scan_set = scan_sub.add_parser("set")
+    p_scan_set.add_argument("--enabled", choices=_AUTO_ONOFF)
+    p_scan_set.add_argument("--horizontal-enabled", dest="horizontal_enabled", choices=_AUTO_ONOFF)
+    p_scan_set.add_argument("--vertical-enabled", dest="vertical_enabled", choices=_AUTO_ONOFF)
+    p_scan_set.add_argument("--horizontal-hosts", dest="horizontal_hosts", type=int,
+                             help="N hosts distintos (mesma porta) pra contar como scan horizontal")
+    p_scan_set.add_argument("--vertical-ports", dest="vertical_ports", type=int,
+                             help="N portas distintas (mesmo host) pra contar como scan vertical")
+    p_scan_set.add_argument("--max-tracked-src-ips-per-cycle", dest="max_tracked_src_ips_per_cycle", type=int)
+    p_scan_set.add_argument("--auto-block", dest="auto_block", choices=_AUTO_ONOFF,
+                             help="liga o bloqueio automático (também precisa de "
+                                  "mitigation_profiles.port_scan_*.auto_mode != off)")
+    p_scan_set.set_defaults(func=cmd_scan_set)
+    p_scan_offenders = scan_sub.add_parser("offenders", help="scanners detectados")
+    p_scan_offenders.add_argument("--history", action="store_true", help="inclui offenders já encerrados")
+    p_scan_offenders.set_defaults(func=cmd_scan_offenders)
+
+    p_escalation = sub.add_parser("escalation", help="bloqueio progressivo por reincidência (scan)")
+    escalation_sub = p_escalation.add_subparsers(dest="escalation_action", required=True)
+    escalation_sub.add_parser("list").set_defaults(func=cmd_escalation_list)
+    p_escalation_set = escalation_sub.add_parser("set")
+    p_escalation_set.add_argument("--enabled", choices=_AUTO_ONOFF)
+    p_escalation_set.add_argument("--tracking-window-s", dest="tracking_window_s", type=int)
+    p_escalation_set.add_argument("--base-ttl-s", dest="base_ttl_s", type=int)
+    p_escalation_set.add_argument("--factor", type=float)
+    p_escalation_set.add_argument("--max-ttl-s", dest="max_ttl_s", type=int)
+    p_escalation_set.add_argument("--max-steps", dest="max_steps", type=int)
+    p_escalation_set.set_defaults(func=cmd_escalation_set)
 
     p_whitelist = sub.add_parser("whitelist")
     whitelist_sub = p_whitelist.add_subparsers(dest="whitelist_action", required=True)
