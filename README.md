@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.35.0**
+**Versão atual: v1.35.1**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,33 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.35.1 — 2026-07-09 — Corrige falso positivo do scan horizontal (CDN/big-tech flagados)
+
+Achado real em produção, ~14h depois do deploy da v1.35.0: `port_scan_offenders`
+acumulou dezenas de detecções pra IPs de Facebook/Fastly/Google (157.240.x,
+151.101.x, 216.239.x) contra prefixos de clientes residenciais — falso positivo,
+não scan de verdade.
+
+Causa: o detector horizontal contava hosts distintos tocados por um src_ip
+SEM exigir a mesma porta de destino — exatamente o requisito que
+`clientguard/detector.py::detect_scan_horizontal` já documentava ("mesma
+dst_port... sem isso, navegação normal bate o limiar"), que eu não portei pro
+detector novo do FlowGuard. Um servidor de CDN respondendo a N clientes MEUS
+gera N conexões, cada uma com uma porta efêmera de retorno DIFERENTE no lado
+do cliente — sem agrupar por porta, isso é indistinguível de 1 atacante
+varrendo N hosts na mesma porta (aparência idêntica: 1 src_ip externo, N
+dst_ips distintos).
+
+Fix: `scan_totals` agora agrupa por `(dst_port -> set(dst_ips))` em vez de um
+set único; horizontal só dispara se ALGUMA porta específica tiver hosts
+distintos suficientes (`analyzer/engine.py::evaluate_scan_cycle`). Como cada
+cliente usa uma porta efêmera diferente pra receber a resposta, tráfego de
+CDN/big-tech nunca mais bate o limiar por porta — só recon de verdade (mesma
+porta varrida em vários hosts) dispara. 1 teste novo reproduzindo o cenário
+exato (Facebook em 8 portas efêmeras distintas, mesmo count de hosts que
+antes disparava). Nenhum bloqueio real chegou a acontecer (`auto_block`
+ainda desligado desde o deploy) — só o sinal de detecção estava errado.
 
 ### v1.35.0 — 2026-07-08 — Detecção de port scan inbound + bloqueio progressivo por reincidência
 

@@ -510,10 +510,16 @@ class FlowGuardDaemon:
                             )
                             scan_cap_hit = True
                     else:
-                        sc = {"dst_ips": set(), "dst_ports": defaultdict(set), "packets": 0}
+                        sc = {"dst_ips_by_port": defaultdict(set), "dst_ports": defaultdict(set), "packets": 0}
                         scan_totals[scan_key] = sc
                 if sc is not None:
-                    sc["dst_ips"].add(rec.dst_ip)
+                    # horizontal só conta como scan se for a MESMA porta em vários hosts
+                    # (achado real em produção: sem isso, CDN/big-tech respondendo a
+                    # VÁRIOS clientes meus — cada um na sua porta efêmera de retorno —
+                    # batia o limiar; mesmo requisito que o ClientGuard já documenta em
+                    # detect_scan_horizontal: "mesma dst_port", senão navegação normal
+                    # vira falso positivo).
+                    sc["dst_ips_by_port"][rec.dst_port].add(rec.dst_ip)
                     sc["dst_ports"][rec.dst_ip].add(rec.dst_port)
                     sc["packets"] += rec.real_packets
 

@@ -294,7 +294,11 @@ class DetectionEngine:
             if _is_whitelisted(f"{src_ip}/32", whitelist):
                 continue
             pps = int(st["packets"] / interval) if interval else 0
-            n_hosts = len(st["dst_ips"])
+            # horizontal = MESMA porta em vários hosts distintos — sem isso, qualquer
+            # servidor popular (CDN/big-tech) respondendo a vários clientes meus (cada
+            # um na sua porta efêmera de retorno) bate o limiar (achado real de
+            # produção). n_hosts é o pior caso entre as portas vistas nesse ciclo.
+            n_hosts = max((len(ips) for ips in st["dst_ips_by_port"].values()), default=0)
             max_ports = max((len(ports) for ports in st["dst_ports"].values()), default=0)
 
             if scan_cfg.get("horizontal_enabled", True):

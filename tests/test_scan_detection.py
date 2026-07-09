@@ -45,15 +45,20 @@ class FakeDaemon:
         self.fired.append((what, coro))
 
 
-def _scan_totals(prefix, src_ip, n_hosts=0, ports_per_host=None):
-    """Monta o dict no mesmo formato que flowguard.py::_aggregate_once produz."""
-    dst_ips = set(f"177.86.16.{i}" for i in range(n_hosts)) if n_hosts else set()
+def _scan_totals(prefix, src_ip, n_hosts=0, ports_per_host=None, same_port=22):
+    """Monta o dict no mesmo formato que flowguard.py::_aggregate_once produz.
+    n_hosts simula 1 src_ip tocando N hosts distintos na MESMA porta (same_port) —
+    requisito real do detector horizontal (achado de produção: CDN/big-tech
+    respondendo em portas efêmeras distintas por cliente NÃO deve contar)."""
+    dst_ips_by_port = defaultdict(set)
+    if n_hosts:
+        dst_ips_by_port[same_port] = set(f"177.86.16.{i}" for i in range(n_hosts))
     dst_ports = defaultdict(set)
     if ports_per_host:
         host, n_ports = ports_per_host
         dst_ports[host] = set(range(1000, 1000 + n_ports))
-        dst_ips.add(host)
-    return {(prefix, src_ip): {"dst_ips": dst_ips, "dst_ports": dst_ports, "packets": 100}}
+        dst_ips_by_port[1000].add(host)
+    return {(prefix, src_ip): {"dst_ips_by_port": dst_ips_by_port, "dst_ports": dst_ports, "packets": 100}}
 
 
 def _cfg(**scan_overrides):
@@ -102,6 +107,26 @@ def test_scan_vertical_detected_and_persisted(tmp_path):
     assert len(offenders) == 1
     assert offenders[0]["src_ip"] == "203.0.113.2"
     assert offenders[0]["dst_count"] == 15
+
+
+def test_scan_horizontal_ignores_same_ip_on_different_ports(tmp_path):
+    """Achado real de produção: CDN/big-tech respondendo a vários clientes MEUS, cada
+    um na sua porta efêmera de retorno, tocava muitos hosts distintos e batia o
+    limiar de scan horizontal — falso positivo (Facebook/Fastly/Google flagados).
+    Sem MESMA porta em comum, não é scan de reconhecimento de verdade."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = FakeDaemon(conn, _cfg(horizontal_hosts=5))
+    engine = DetectionEngine(daemon)
+    dst_ips_by_port = defaultdict(set)
+    for i in range(8):
+        dst_ips_by_port[50000 + i].add(f"177.86.16.{i}")  # porta efêmera DIFERENTE por cliente
+    totals = {("177.86.16.0/24", "157.240.22.13"): {
+        "dst_ips_by_port": dst_ips_by_port, "dst_ports": defaultdict(set), "packets": 100,
+    }}
+
+    asyncio.run(_run(engine, daemon, totals))
+
+    assert storage.list_scan_offenders(conn) == []
 
 
 def test_scan_below_threshold_not_detected(tmp_path):
