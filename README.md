@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.36.0**
+**Versão atual: v1.36.1**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,26 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.36.1 — 2026-07-10 — Corrige CPU alta: cache de redes já parseadas (protected_prefixes + whitelist)
+
+Achado via profiling real (py-spy, 60s de amostragem) depois do usuário reportar
+CPU alta no FlowGuard/ClientGuard. `match_protected_prefix` respondia por 46%
+da CPU do daemon: reparseava TODAS as CIDRs de `protected_prefixes`
+(`ipaddress.ip_network()`, parsing de string) a CADA chamada, e é chamado 2x
+por registro NetFlow (dst_ip e src_ip) em `_aggregate_once` — na prática,
+milhões de reparses por ciclo pra derivar sempre os MESMOS objetos (a lista só
+muda de fato num `reload_config()`). `_is_whitelisted` tinha o mesmo problema
+pro detector de scan (~9.5% da CPU): reparseava a whitelist inteira 1x por
+src_ip externo rastreado no ciclo.
+
+Fix: cache de 1 slot em `collector/prefixes.py`/`analyzer/engine.py`, chaveado
+por identidade do objeto lista (`id()` + guarda `is`, protegida contra
+reciclagem de id pelo GC porque o cache mantém referência viva ao objeto
+antigo) — reparseia só quando a lista de fato muda (reload), não a cada
+chamada. Zero mudança de comportamento/assinatura pública, só corta trabalho
+repetido. 4 testes novos confirmando reuso do cache + invalidação correta
+quando a lista muda.
 
 ### v1.36.0 — 2026-07-10 — Detecção de destino coordenado (N src externos → 1 host/porta protegido)
 

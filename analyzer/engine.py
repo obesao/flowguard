@@ -40,16 +40,40 @@ TCP_FLAG_SYN = 0x02
 TCP_FLAG_ACK = 0x10
 
 
+# Cache de 1 slot das redes de whitelist já parseadas — achado real de profiling
+# de CPU (2026-07-10): evaluate_scan_cycle chama _is_whitelisted 1x por src_ip
+# externo rastreado no ciclo (pode ser centenas), e sem isso cada chamada
+# reparseava TODA a whitelist (ipaddress.ip_network() por entrada) do zero —
+# ~9.5% da CPU do daemon só nisso. Mesmo padrão/motivo de
+# collector/prefixes.py::_parsed_networks (whitelist só muda de fato num
+# reload_config()).
+_wl_cache_key: int | None = None
+_wl_cache_list_ref: list | None = None
+_wl_cache_networks: list = []
+
+
+def _parsed_whitelist(whitelist: list[str]):
+    global _wl_cache_key, _wl_cache_list_ref, _wl_cache_networks
+    if _wl_cache_key == id(whitelist) and _wl_cache_list_ref is whitelist:
+        return _wl_cache_networks
+    parsed = []
+    for entry in whitelist:
+        try:
+            parsed.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            continue
+    _wl_cache_key = id(whitelist)
+    _wl_cache_list_ref = whitelist
+    _wl_cache_networks = parsed
+    return parsed
+
+
 def _is_whitelisted(prefix: str, whitelist: list[str]) -> bool:
     try:
         net = ipaddress.ip_network(prefix, strict=False)
     except ValueError:
         return False
-    for entry in whitelist:
-        try:
-            wl_net = ipaddress.ip_network(entry, strict=False)
-        except ValueError:
-            continue
+    for wl_net in _parsed_whitelist(whitelist):
         if net == wl_net or net.subnet_of(wl_net):
             return True
     return False

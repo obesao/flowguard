@@ -1,5 +1,6 @@
 """Testes de collector/prefixes.py: match_protected_prefix e resolve_dst_prefix."""
 
+import collector.prefixes as prefixes_module
 from collector.prefixes import match_protected_prefix, resolve_dst_prefix
 
 PROTECTED = [
@@ -61,3 +62,32 @@ def test_resolve_falls_back_to_slash64_for_unprotected_ipv6():
 
 def test_resolve_returns_raw_ip_for_invalid_input():
     assert resolve_dst_prefix("not-an-ip", []) == "not-an-ip"
+
+
+# --- cache de redes parseadas (achado de profiling de CPU 2026-07-10) -------
+
+def test_match_reuses_cached_networks_for_same_list_object(monkeypatch):
+    entries = [{"prefix": "203.0.113.0/24"}]
+    calls = []
+    real_ip_network = prefixes_module.ipaddress.ip_network
+
+    def _spy(*args, **kwargs):
+        calls.append(args)
+        return real_ip_network(*args, **kwargs)
+
+    monkeypatch.setattr(prefixes_module.ipaddress, "ip_network", _spy)
+    match_protected_prefix("203.0.113.1", entries)
+    match_protected_prefix("203.0.113.2", entries)
+    match_protected_prefix("203.0.113.3", entries)
+    # 3 chamadas, MESMA lista -> só a 1ª deveria reparsear a CIDR
+    assert len(calls) == 1
+
+
+def test_match_reparses_when_given_a_different_list_object(monkeypatch):
+    entries_a = [{"prefix": "203.0.113.0/24"}]
+    entries_b = [{"prefix": "198.51.100.0/24"}]
+    match_protected_prefix("203.0.113.1", entries_a)
+    # lista DIFERENTE (mesmo se o conteúdo fosse igual) -> não reusa cache do
+    # objeto anterior, resultado correto pra CADA lista
+    assert match_protected_prefix("198.51.100.1", entries_b) == "198.51.100.0/24"
+    assert match_protected_prefix("203.0.113.1", entries_a) == "203.0.113.0/24"

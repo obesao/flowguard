@@ -1,0 +1,13 @@
+# scan_detection.yaml — detecção de port scan de fora pra dentro (IP externo
+# varrendo um prefixo protegido). horizontal_hosts/vertical_ports são placeholders,
+# calibrar contra tráfego real antes de confiar no sinal. auto_block liga o
+# bloqueio automático (FlowSpec discard do src_ip do atacante) — também precisa de
+# mitigation_profiles.<port_scan_horizontal|vertical>.auto_mode != 'off'.
+# Editável via portal (aba Configuração > FlowGuard) ou flowguard-cli scan set.
+enabled: true
+horizontal_enabled: true
+vertical_enabled: true
+horizontal_hosts: 20
+vertical_ports: 50
+max_tracked_src_ips_per_cycle: 5000
+auto_block: true

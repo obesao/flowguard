@@ -39,12 +39,16 @@ class RecordingDetector:
     def __init__(self):
         self.calls = []
         self.scan_calls = []
+        self.coord_calls = []
 
     async def evaluate_cycle(self, now, proto_totals_bps, amp_totals_bps, syn_totals_bps):
         self.calls.append((now, proto_totals_bps, amp_totals_bps, syn_totals_bps))
 
     async def evaluate_scan_cycle(self, now, scan_totals, interval):
         self.scan_calls.append((now, scan_totals, interval))
+
+    async def evaluate_coordinated_destination_cycle(self, now, coord_totals, interval):
+        self.coord_calls.append((now, coord_totals, interval))
 
 
 class RecordingBgpManager:
