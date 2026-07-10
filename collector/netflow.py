@@ -147,7 +147,13 @@ def parse_packet(data: bytes, peer: str, store: TemplateStore, default_sampling_
         if flowset_id == 0:
             _parse_template_flowset(body, peer, source_id, store)
         elif flowset_id == 1:
-            pass  # options template — não necessário para FlowRecord
+            # options template — descartado deliberadamente. Investigado ao vivo em
+            # 2026-07-10: a NE8000 manda só 9 templates de opção, nenhum com os
+            # campos padrão de amostragem (34 SAMPLING_INTERVAL, 48-50 FLOW_SAMPLER_*)
+            # — só campos proprietários Huawei (IDs 1200-1228, estatística de
+            # interface/ASIC). Não dá pra aprender a taxa de amostragem real por
+            # aqui com este exportador; sampling_rate continua fixo em config.yaml.
+            pass
         elif flowset_id >= 256:
             template = store.get(peer, source_id, flowset_id)
             if template:
