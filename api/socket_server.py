@@ -513,12 +513,20 @@ class SocketServer:
         return {"ok": True, "templates": updated}
 
     async def _cmd_learn_templates(self, request: dict) -> dict:
-        """Deriva limiar de ddos_bps_threshold por prefixo a partir do baseline EWMA
-        já acumulado (prefix_baseline — mesmo dado que o detector anomalia_baseline já
-        usa, não é coleta nova) e agrupa prefixos com sugestão parecida num template
-        reutilizável — em vez de copiar o mesmo número (achado real 2026-07-10:
-        30 Gbps repetido em 7 dos 8 prefixos, mesmo com tráfego real variando de
-        ~0.02 a ~10 Gbps entre eles).
+        """Deriva limiar de ddos_bps_threshold E ddos_pps_threshold por prefixo a
+        partir do baseline EWMA já acumulado (prefix_baseline — mesmo dado que o
+        detector anomalia_baseline já usa, não é coleta nova) e agrupa prefixos com
+        sugestão parecida num template reutilizável — em vez de copiar o mesmo
+        número (achado real 2026-07-10: 30 Gbps repetido em 7 dos 8 prefixos, mesmo
+        com tráfego real variando de ~0.02 a ~10 Gbps entre eles).
+
+        Achado real 2026-07-10 (2ª rodada): a 1ª versão deste comando só ajustava
+        ddos_bps_threshold — ddos_pps_threshold continuou no default global
+        (100.000 pps) pra todo prefixo. `volumetric_hit` dispara por bps OU por pps
+        (`analyzer/engine.py`); um prefixo com pps_mean real de ~211.000 (bem acima
+        do default) disparava ataque falso constantemente só pelo pps, mesmo já com
+        o bps corrigido. Ambos os limiares agora vêm do mesmo baseline (pps_mean/
+        pps_var já existem na mesma tabela, sem SQL novo).
 
         sigma/min_samples default pros MESMOS valores já configurados em
         detection.baseline_sigma/baseline_min_samples — reaproveita o vocabulário
@@ -529,8 +537,10 @@ class SocketServer:
         sigma = float(request.get("sigma") or det.get("baseline_sigma", 4))
         min_samples = int(request.get("min_samples") or det.get("baseline_min_samples", 120))
         min_threshold_bps = int(request.get("min_threshold_bps") or 500_000_000)
+        min_threshold_pps = int(request.get("min_threshold_pps") or 10_000)
         apply_changes = bool(request.get("apply", False))
-        round_step = 100_000_000  # 100 Mbps — granularidade do agrupamento/arredondamento
+        bps_round_step = 100_000_000  # 100 Mbps — granularidade do agrupamento/arredondamento de bps
+        pps_round_step = 10_000       # 10k pps — idem pra pps
 
         baselines = await self.daemon.run_read_db(storage.list_baselines)
         protected = cfg.get("protected_prefixes", [])
@@ -550,40 +560,65 @@ class SocketServer:
                 continue
             bps_mean = baseline["bps_mean"]
             bps_std = math.sqrt(max(baseline["bps_var"], 0))
-            suggested = bps_mean + sigma * bps_std
-            rounded = max(round_step * math.ceil(suggested / round_step), min_threshold_bps)
-            old_threshold = (
+            pps_mean = baseline["pps_mean"]
+            pps_std = math.sqrt(max(baseline["pps_var"], 0))
+            suggested_bps = bps_mean + sigma * bps_std
+            suggested_pps = pps_mean + sigma * pps_std
+            rounded_bps = max(bps_round_step * math.ceil(suggested_bps / bps_round_step), min_threshold_bps)
+            rounded_pps = max(pps_round_step * math.ceil(suggested_pps / pps_round_step), min_threshold_pps)
+            old_bps_threshold = (
                 (entry.get("thresholds") or {}).get("ddos_bps_threshold")
                 or cfg.get("detection_templates", {}).get(entry.get("template"), {}).get("ddos_bps_threshold")
                 or det.get("ddos_bps_threshold", 500_000_000)
             )
+            old_pps_threshold = (
+                (entry.get("thresholds") or {}).get("ddos_pps_threshold")
+                or cfg.get("detection_templates", {}).get(entry.get("template"), {}).get("ddos_pps_threshold")
+                or det.get("ddos_pps_threshold", 100_000)
+            )
             results.append({
                 "prefix": prefix, "ready": True, "samples": baseline["samples"],
-                "bps_mean": bps_mean, "bps_std": bps_std,
-                "old_effective_threshold": old_threshold, "new_threshold": rounded,
+                "bps_mean": bps_mean, "bps_std": bps_std, "pps_mean": pps_mean, "pps_std": pps_std,
+                "old_effective_threshold": old_bps_threshold, "new_threshold": rounded_bps,
+                "old_effective_pps_threshold": old_pps_threshold, "new_pps_threshold": rounded_pps,
             })
-            groups.setdefault(rounded, []).append(prefix)
+            groups.setdefault(rounded_bps, []).append(prefix)
+
+        # pps do template = o MAIOR pps sugerido entre os prefixos do grupo — grupo é
+        # formado pelo bps (dimensão principal), então usar o maior pps garante que
+        # nenhum membro do grupo fique sub-protegido nessa dimensão (mais seguro que
+        # a média, já que sub-dimensionar pps reabre exatamente o bug desta rodada).
+        group_pps: dict[int, int] = {}
+        for rounded_bps, prefixes in groups.items():
+            group_pps[rounded_bps] = max(
+                r["new_pps_threshold"] for r in results if r.get("ready") and r["prefix"] in prefixes
+            )
 
         template_names: dict[int, str] = {}
-        for rounded, prefixes in groups.items():
-            gbps = rounded / 1e9
+        for rounded_bps, prefixes in groups.items():
+            gbps = rounded_bps / 1e9
             name = f"auto_learned_{gbps:.1f}".replace(".", "_") + "g"
-            template_names[rounded] = name
+            template_names[rounded_bps] = name
 
         for r in results:
             if r["ready"]:
                 r["new_template"] = template_names[r["new_threshold"]]
+                r["new_pps_threshold"] = group_pps[r["new_threshold"]]
 
         if apply_changes:
             path = self.daemon.config["_detection_templates_file"]
-            for rounded, prefixes in groups.items():
-                name = template_names[rounded]
+            for rounded_bps, prefixes in groups.items():
+                name = template_names[rounded_bps]
                 desc = (
                     f"Gerado automaticamente em {time.strftime('%Y-%m-%d')} a partir do baseline "
                     f"real (sigma={sigma}, min_samples={min_samples}) dos prefixos: "
                     + ", ".join(prefixes) + "."
                 )
-                configio.save_detection_template(path, name, {"ddos_bps_threshold": rounded}, desc)
+                configio.save_detection_template(
+                    path, name,
+                    {"ddos_bps_threshold": rounded_bps, "ddos_pps_threshold": group_pps[rounded_bps]},
+                    desc,
+                )
 
             pp_path = self.daemon.config["_protected_prefixes_file"]
             # usa a lista já carregada em memória (`protected`, lida no topo deste

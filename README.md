@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.36.3**
+**Versão atual: v1.36.4**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,28 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.36.4 — 2026-07-10 — `learn-templates` também deriva ddos_pps_threshold (faltava)
+
+Achado real horas depois de aplicar a v1.36.3: `177.86.17.0/24` voltou a
+disparar `ddos_volumetrico` (ataque #122, pico 2.34→2.68 Gbps) mesmo com o
+bps já corrigido pro template `auto_learned_8_1g` (8.1 Gbps). Causa: a
+v1.36.3 só ajustava `ddos_bps_threshold` — `ddos_pps_threshold` continuou
+no default global (100.000 pps) pra todo prefixo. `volumetric_hit`
+dispara por bps OU por pps; esse prefixo tem `pps_mean` real de ~211.000
+(bem acima do default) — disparava ataque falso só pelo pps,
+independente do bps.
+
+`ddos_pps_threshold` agora vem do MESMO baseline (`pps_mean`/`pps_var` já
+existem em `prefix_baseline`, sem SQL novo), mesma fórmula (`pps_mean +
+sigma*pps_std`, arredondado a 10k pps, piso configurável — default 10.000).
+Quando dois prefixos caem no mesmo template por bps mas têm pps diferente,
+o template usa o MAIOR pps sugerido entre eles (mais seguro que a média —
+sub-dimensionar reabriria o mesmo bug). Reaplicado em produção: os 8
+prefixos ganharam `ddos_pps_threshold` de 40.000 a 3.320.000 (antes, 100.000
+pra todos) — ataque #122 fechou sozinho no ciclo seguinte. 4 testes novos
+(derivação, agrupamento por máximo, gravação no template, piso
+configurável), 435 no total.
 
 ### v1.36.3 — 2026-07-10 — Gera templates de DDoS a partir do baseline real (`learn-templates`)
 

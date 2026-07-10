@@ -689,23 +689,28 @@ def cmd_learn_templates(args: argparse.Namespace, sock_path: str) -> None:
         payload["min_samples"] = args.min_samples
     if args.min_threshold_mbps is not None:
         payload["min_threshold_bps"] = int(args.min_threshold_mbps * 1e6)
+    if args.min_threshold_pps is not None:
+        payload["min_threshold_pps"] = args.min_threshold_pps
     resp = send_command(sock_path, payload)
     die_on_error(resp)
     title = "Templates aplicados" if resp["applied"] else "Proposta (dry-run — use --apply pra gravar)"
     table = Table(title=title)
     table.add_column("Prefixo")
     table.add_column("Amostras")
-    table.add_column("Média")
-    table.add_column("Limiar antigo")
-    table.add_column("Limiar novo")
+    table.add_column("Média bps")
+    table.add_column("Média pps")
+    table.add_column("bps: antigo -> novo")
+    table.add_column("pps: antigo -> novo")
     table.add_column("Template novo")
     for r in resp["results"]:
         if not r["ready"]:
-            table.add_row(r["prefix"], str(r["samples"]), "-", "-", "-", "[dim]amostras insuficientes[/dim]")
+            table.add_row(r["prefix"], str(r["samples"]), "-", "-", "-", "-", "[dim]amostras insuficientes[/dim]")
             continue
         table.add_row(
-            r["prefix"], str(r["samples"]), fmt_bps(r["bps_mean"]),
-            fmt_bps(r["old_effective_threshold"]), fmt_bps(r["new_threshold"]), r["new_template"],
+            r["prefix"], str(r["samples"]), fmt_bps(r["bps_mean"]), f"{r['pps_mean']:,.0f}".replace(",", "."),
+            f"{fmt_bps(r['old_effective_threshold'])} -> {fmt_bps(r['new_threshold'])}",
+            f"{r['old_effective_pps_threshold']:,} -> {r['new_pps_threshold']:,}".replace(",", "."),
+            r["new_template"],
         )
     console.print(table)
     if not resp["applied"]:
@@ -1237,12 +1242,14 @@ def main() -> None:
     p_escalation_set.set_defaults(func=cmd_escalation_set)
 
     p_learn = sub.add_parser("learn-templates",
-                              help="deriva limiar de ddos_bps_threshold do baseline real e gera templates")
+                              help="deriva limiar de ddos_bps_threshold/ddos_pps_threshold do baseline real e gera templates")
     p_learn.add_argument("--sigma", type=float, help="default: detection.baseline_sigma já configurado")
     p_learn.add_argument("--min-samples", dest="min_samples", type=int,
                           help="default: detection.baseline_min_samples já configurado")
     p_learn.add_argument("--min-threshold-mbps", dest="min_threshold_mbps", type=float,
-                          help="piso do limiar sugerido, em Mbps (default: 500)")
+                          help="piso do limiar de bps sugerido, em Mbps (default: 500)")
+    p_learn.add_argument("--min-threshold-pps", dest="min_threshold_pps", type=int,
+                          help="piso do limiar de pps sugerido (default: 10000)")
     p_learn.add_argument("--apply", action="store_true",
                           help="aplica de verdade (cria templates + reatribui prefixos) — sem isso só mostra a proposta")
     p_learn.set_defaults(func=cmd_learn_templates)
