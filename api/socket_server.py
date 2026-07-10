@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from pathlib import Path
@@ -510,6 +511,109 @@ class SocketServer:
             return {"ok": False, "error": str(exc)}
         self.daemon.reload_config()
         return {"ok": True, "templates": updated}
+
+    async def _cmd_learn_templates(self, request: dict) -> dict:
+        """Deriva limiar de ddos_bps_threshold por prefixo a partir do baseline EWMA
+        já acumulado (prefix_baseline — mesmo dado que o detector anomalia_baseline já
+        usa, não é coleta nova) e agrupa prefixos com sugestão parecida num template
+        reutilizável — em vez de copiar o mesmo número (achado real 2026-07-10:
+        30 Gbps repetido em 7 dos 8 prefixos, mesmo com tráfego real variando de
+        ~0.02 a ~10 Gbps entre eles).
+
+        sigma/min_samples default pros MESMOS valores já configurados em
+        detection.baseline_sigma/baseline_min_samples — reaproveita o vocabulário
+        estatístico que já existe, não inventa um conceito novo. apply=false
+        (default) só devolve a proposta, não escreve nada."""
+        cfg = self.daemon.config
+        det = cfg.get("detection", {})
+        sigma = float(request.get("sigma") or det.get("baseline_sigma", 4))
+        min_samples = int(request.get("min_samples") or det.get("baseline_min_samples", 120))
+        min_threshold_bps = int(request.get("min_threshold_bps") or 500_000_000)
+        apply_changes = bool(request.get("apply", False))
+        round_step = 100_000_000  # 100 Mbps — granularidade do agrupamento/arredondamento
+
+        baselines = await self.daemon.run_read_db(storage.list_baselines)
+        protected = cfg.get("protected_prefixes", [])
+
+        results = []
+        groups: dict[int, list[str]] = {}
+        for entry in protected:
+            prefix = entry.get("prefix")
+            if not prefix:
+                continue
+            baseline = baselines.get(prefix)
+            if not baseline or baseline["samples"] < min_samples:
+                results.append({
+                    "prefix": prefix, "ready": False,
+                    "samples": baseline["samples"] if baseline else 0,
+                })
+                continue
+            bps_mean = baseline["bps_mean"]
+            bps_std = math.sqrt(max(baseline["bps_var"], 0))
+            suggested = bps_mean + sigma * bps_std
+            rounded = max(round_step * math.ceil(suggested / round_step), min_threshold_bps)
+            old_threshold = (
+                (entry.get("thresholds") or {}).get("ddos_bps_threshold")
+                or cfg.get("detection_templates", {}).get(entry.get("template"), {}).get("ddos_bps_threshold")
+                or det.get("ddos_bps_threshold", 500_000_000)
+            )
+            results.append({
+                "prefix": prefix, "ready": True, "samples": baseline["samples"],
+                "bps_mean": bps_mean, "bps_std": bps_std,
+                "old_effective_threshold": old_threshold, "new_threshold": rounded,
+            })
+            groups.setdefault(rounded, []).append(prefix)
+
+        template_names: dict[int, str] = {}
+        for rounded, prefixes in groups.items():
+            gbps = rounded / 1e9
+            name = f"auto_learned_{gbps:.1f}".replace(".", "_") + "g"
+            template_names[rounded] = name
+
+        for r in results:
+            if r["ready"]:
+                r["new_template"] = template_names[r["new_threshold"]]
+
+        if apply_changes:
+            path = self.daemon.config["_detection_templates_file"]
+            for rounded, prefixes in groups.items():
+                name = template_names[rounded]
+                desc = (
+                    f"Gerado automaticamente em {time.strftime('%Y-%m-%d')} a partir do baseline "
+                    f"real (sigma={sigma}, min_samples={min_samples}) dos prefixos: "
+                    + ", ".join(prefixes) + "."
+                )
+                configio.save_detection_template(path, name, {"ddos_bps_threshold": rounded}, desc)
+
+            pp_path = self.daemon.config["_protected_prefixes_file"]
+            # usa a lista já carregada em memória (`protected`, lida no topo deste
+            # método), não relê o arquivo — achado real ao testar: reler do disco
+            # aqui perdia todo prefixo que só existisse em memória (ex.: acabou de
+            # ser adicionado nesta mesma requisição/ciclo), zerando customer/
+            # capacity_mbps/auto_mitigate/notify_wa de QUALQUER prefixo não tocado.
+            by_prefix = {item.get("prefix"): item for item in protected}
+            for r in results:
+                if not r["ready"]:
+                    continue
+                existing = by_prefix.get(r["prefix"], {})
+                # preserva os campos que _build_monitor_entry não recebe deste
+                # comando — sem isso, o upsert resetaria customer/capacity_mbps/
+                # auto_mitigate/notify_wa pro default (achado ao revisar
+                # _cmd_monitor_set, que reconstrói o registro do zero a partir só
+                # do que vier no request).
+                entry = {
+                    "prefix": r["prefix"],
+                    "customer": existing.get("customer", ""),
+                    "capacity_mbps": existing.get("capacity_mbps", 0),
+                    "auto_mitigate": bool(existing.get("auto_mitigate", False)),
+                    "notify_wa": bool(existing.get("notify_wa", False)),
+                    "template": r["new_template"],
+                }
+                by_prefix[r["prefix"]] = entry
+            configio.save_yaml_list(pp_path, list(by_prefix.values()), header_comment=PROTECTED_PREFIXES_HEADER)
+            self.daemon.reload_config()
+
+        return {"ok": True, "sigma": sigma, "min_samples": min_samples, "applied": apply_changes, "results": results}
 
     async def _cmd_reload(self, request: dict) -> dict:
         self.daemon.reload_config()

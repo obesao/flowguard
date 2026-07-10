@@ -16,3 +16,27 @@ cliente_100g:
 
     '
   ddos_bps_threshold: 30000000000
+auto_learned_0_5g:
+  ddos_bps_threshold: 500000000
+  description: 'Gerado automaticamente em 2026-07-10 a partir do baseline real (sigma=8.0,
+    min_samples=120) dos prefixos: 177.86.16.0/24, 177.86.19.0/24, 177.86.22.0/24.'
+auto_learned_8_1g:
+  ddos_bps_threshold: 8100000000
+  description: 'Gerado automaticamente em 2026-07-10 a partir do baseline real (sigma=8.0,
+    min_samples=120) dos prefixos: 177.86.17.0/24.'
+auto_learned_1_0g:
+  ddos_bps_threshold: 1000000000
+  description: 'Gerado automaticamente em 2026-07-10 a partir do baseline real (sigma=8.0,
+    min_samples=120) dos prefixos: 177.86.18.0/24.'
+auto_learned_28_1g:
+  ddos_bps_threshold: 28100000000
+  description: 'Gerado automaticamente em 2026-07-10 a partir do baseline real (sigma=8.0,
+    min_samples=120) dos prefixos: 177.86.20.0/24.'
+auto_learned_31_1g:
+  ddos_bps_threshold: 31100000000
+  description: 'Gerado automaticamente em 2026-07-10 a partir do baseline real (sigma=8.0,
+    min_samples=120) dos prefixos: 177.86.21.0/24.'
+auto_learned_1_1g:
+  ddos_bps_threshold: 1100000000
+  description: 'Gerado automaticamente em 2026-07-10 a partir do baseline real (sigma=8.0,
+    min_samples=120) dos prefixos: 177.86.23.0/24.'

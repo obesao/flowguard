@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.36.2**
+**Versão atual: v1.36.3**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,45 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.36.3 — 2026-07-10 — Gera templates de DDoS a partir do baseline real (`learn-templates`)
+
+Achado real de produção: ataque #120 (`177.86.17.0/24`, pico 2.34 Gbps) era
+falso positivo — esse prefixo era o único dos 8 protegidos sem
+`thresholds.ddos_bps_threshold` explícito, caindo no limiar global
+(1.8 Gbps, bem abaixo do tráfego normal dele). Corrigido na hora
+(`thresholds: ddos_bps_threshold: 30000000000`, igual aos outros 7).
+
+Mas os outros 7 também estavam errados, só que silenciosamente: todos
+compartilhavam o MESMO limiar de 30 Gbps copiado prefixo a prefixo, mesmo
+com tráfego real variando de ~0.02 a ~10 Gbps entre eles — 500x de
+diferença. Consultando o baseline EWMA que o FlowGuard já mantém por
+prefixo (`prefix_baseline`, usado até aqui só pelo detector
+`anomalia_baseline`), `samples` já estava entre 7.000 e 24.000 em todos os
+8 — muito além da 1h (120 amostras de 30s) necessária, então não precisou
+esperar nada: os dados já existiam.
+
+**Novo comando** `flowguard-cli learn-templates [--sigma N] [--min-samples N]
+[--min-threshold-mbps N] [--apply]` (socket `learn_templates`,
+`api/socket_server.py`): deriva `ddos_bps_threshold = bps_mean + sigma*std`
+por prefixo (sigma/min_samples default = os mesmos já configurados em
+`detection.baseline_sigma`/`baseline_min_samples`, hoje 8/120 — reaproveita
+o vocabulário estatístico que já existia, não inventa um conceito novo),
+agrupa prefixos com sugestão parecida (arredondada a 100 Mbps) num template
+só (`auto_learned_<Ngbps>g`), e sem `--apply` só mostra a proposta (nada é
+gravado). Rodado contra produção: 6 templates novos substituindo o
+`thresholds:` duplicado nos 8 prefixos, de 500 Mbps (`177.86.16/19/22`,
+quase ociosos) a 31.1 Gbps (`177.86.21`, o mais pesado de verdade) — ataque
+#120 fechou sozinho no ciclo seguinte.
+
+**Achado real ao testar**: a implementação inicial relia em reler
+`protected_prefixes.yaml` do disco na hora de aplicar, em vez de usar a
+lista já carregada em memória — qualquer prefixo não tocado pelo comando
+perdia `customer`/`capacity_mbps`/`auto_mitigate`/`notify_wa` (resetava pro
+default). Corrigido antes de aplicar em produção; 9 testes novos cobrindo
+isso e o resto do comando (agrupamento, prefixo sem amostra suficiente,
+dry-run não escreve nada, preservação de campos no apply). 431 testes no
+total.
 
 ### v1.36.2 — 2026-07-10 — Corrige falso positivo do scan vertical (Google/YouTube bloqueados)
 
