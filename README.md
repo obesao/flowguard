@@ -83,6 +83,20 @@ análise sob demanda.
 
 ## Changelog
 
+### v1.36.5 — 2026-07-10 — KPI "Tráfego" mostra entrada e saída separadas
+
+Usuário reportou que o total de tráfego mostrado batia diferente do que
+ferramentas externas de monitoramento (SNMP) mostravam. Causa: o KPI
+"Tráfego" do topo do portal e o `flowguard-cli status` só somavam
+`direction='in'` (entrada) — quem comparasse com uma ferramenta que
+mostra entrada e saída separadas podia estranhar o número único.
+
+`daemon_stats()` agora retorna `bps_out`/`pps_out` além de `bps`/`pps`
+(consulta separada por `direction='out'`, sem SQL novo — mesma tabela
+`flow_aggs`). KPI web e `status` da CLI mostram as duas direções lado a
+lado. Não muda nenhum limiar de detecção — só exibição. 2 testes novos
+(437 no total).
+
 ### v1.36.4 — 2026-07-10 — `learn-templates` também deriva ddos_pps_threshold (faltava)
 
 Achado real horas depois de aplicar a v1.36.3: `177.86.17.0/24` voltou a

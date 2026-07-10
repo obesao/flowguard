@@ -262,6 +262,16 @@ def daemon_stats(conn: sqlite3.Connection, window_s: int = 30) -> dict:
         "COALESCE(SUM(flow_count),0) AS flows FROM flow_aggs WHERE ts >= ? AND direction = 'in'",
         (since,),
     ).fetchone()
+    # tráfego de saída (clientes protegidos como origem) — pedido do usuário
+    # (2026-07-10): o KPI "Tráfego" só mostrava entrada, causando confusão ao
+    # comparar com ferramentas externas (Grafana/SNMP) que podem mostrar outra
+    # direção/composição. Mostrar as duas juntas na mesma caixa deixa explícito
+    # o que está sendo somado, em vez de um número ambíguo.
+    row_out = conn.execute(
+        "SELECT COALESCE(SUM(bps),0) AS bps, COALESCE(SUM(pps),0) AS pps "
+        "FROM flow_aggs WHERE ts >= ? AND direction = 'out'",
+        (since,),
+    ).fetchone()
     active_attacks = conn.execute(
         "SELECT COUNT(*) AS n FROM attacks WHERE ts_end IS NULL AND dismissed = 0"
     ).fetchone()["n"]
@@ -271,6 +281,8 @@ def daemon_stats(conn: sqlite3.Connection, window_s: int = 30) -> dict:
     return {
         "bps": row["bps"],
         "pps": row["pps"],
+        "bps_out": row_out["bps"],
+        "pps_out": row_out["pps"],
         "flows": row["flows"],
         "active_attacks": active_attacks,
         "active_rules": active_rules,
