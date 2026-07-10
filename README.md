@@ -99,7 +99,7 @@ lado. Não muda nenhum limiar de detecção — só exibição. 2 testes novos
 
 ### v1.36.4 — 2026-07-10 — `learn-templates` também deriva ddos_pps_threshold (faltava)
 
-Achado real horas depois de aplicar a v1.36.3: `177.86.17.0/24` voltou a
+Achado real horas depois de aplicar a v1.36.3: `x.x.x.0/24` (prefixo cliente) voltou a
 disparar `ddos_volumetrico` (ataque #122, pico 2.34→2.68 Gbps) mesmo com o
 bps já corrigido pro template `auto_learned_8_1g` (8.1 Gbps). Causa: a
 v1.36.3 só ajustava `ddos_bps_threshold` — `ddos_pps_threshold` continuou
@@ -121,7 +121,7 @@ configurável), 435 no total.
 
 ### v1.36.3 — 2026-07-10 — Gera templates de DDoS a partir do baseline real (`learn-templates`)
 
-Achado real de produção: ataque #120 (`177.86.17.0/24`, pico 2.34 Gbps) era
+Achado real de produção: ataque #120 (`x.x.x.0/24`, prefixo cliente, pico 2.34 Gbps) era
 falso positivo — esse prefixo era o único dos 8 protegidos sem
 `thresholds.ddos_bps_threshold` explícito, caindo no limiar global
 (1.8 Gbps, bem abaixo do tráfego normal dele). Corrigido na hora
@@ -145,8 +145,8 @@ o vocabulário estatístico que já existia, não inventa um conceito novo),
 agrupa prefixos com sugestão parecida (arredondada a 100 Mbps) num template
 só (`auto_learned_<Ngbps>g`), e sem `--apply` só mostra a proposta (nada é
 gravado). Rodado contra produção: 6 templates novos substituindo o
-`thresholds:` duplicado nos 8 prefixos, de 500 Mbps (`177.86.16/19/22`,
-quase ociosos) a 31.1 Gbps (`177.86.21`, o mais pesado de verdade) — ataque
+`thresholds:` duplicado nos 8 prefixos, de 500 Mbps (3 prefixos quase
+ociosos) a 31.1 Gbps (o mais pesado de verdade) — ataque
 #120 fechou sozinho no ciclo seguinte.
 
 **Achado real ao testar**: a implementação inicial relia em reler
@@ -238,7 +238,7 @@ um "interruptor morto" descoberto depois).
 
 **Achado real de produção, no mesmo dia do deploy**: as primeiras ~13
 detecções ativas foram **100% UDP/ESP** (nenhuma TCP), espalhadas por vários
-hosts diferentes nos pools CGNAT (`177.86.20.0/24`, `177.86.21.0/24`), cada
+hosts diferentes nos pools CGNAT (2 prefixos de clientes), cada
 um numa porta alta diferente (nenhuma nas `common_service_ports`), 8-32
 fontes externas distintas cada. Assinatura clássica de P2P/torrent/WebRTC/
 jogo (1 host residencial recebendo conexão de vários peers na porta dele),
@@ -523,10 +523,10 @@ linhas restantes são branches de fallback de campo raramente exercitadas,
 não vale o esforço de simular). Suíte completa: 191 → 217 testes, todos
 passando, sem regressão.
 
-### v1.32.1 — 2026-07-07 — Ajuste operacional: 177.86.17.0/24 sai da auto-mitigação
+### v1.32.1 — 2026-07-07 — Ajuste operacional: prefixo cliente sai da auto-mitigação
 `auto_mitigate`/`notify_wa` desligados e `thresholds.ddos_bps_threshold`
-customizado removido (volta ao limiar global/template) pra
-`177.86.17.0/24` — decisão operacional do usuário, sem mudança de código.
+customizado removido (volta ao limiar global/template) pra um prefixo
+cliente (`x.x.x.0/24`) — decisão operacional do usuário, sem mudança de código.
 
 ### v1.32.0 — 2026-07-05 — Templates e ajuste fino de detecção via portal (replica o mecanismo do ClientGuard)
 Pedido do usuário: trazer pro FlowGuard o mesmo sistema de templates +
