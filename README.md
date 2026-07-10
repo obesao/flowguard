@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.36.1**
+**Versão atual: v1.36.2**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,35 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.36.2 — 2026-07-10 — Corrige falso positivo do scan vertical (Google/YouTube bloqueados)
+
+Achado real de produção reportado pelo usuário: com `auto_block` ligado,
+tráfego real de Google/YouTube estava sendo bloqueado como "scan vertical".
+Todos os 359+ registros de `port_scan_offenders` até aqui eram do tipo
+`vertical` — zero horizontal (o fix da v1.35.1 pro horizontal funcionou).
+
+**Causa**: detector vertical conta portas distintas que um src_ip externo
+toca no MESMO host protegido — mas essa "porta" é a porta EFÊMERA do lado
+do CLIENTE (porta de retorno da conexão que o cliente iniciou), não uma
+porta de serviço fixa. Streaming/CDN (Google/YouTube) abre várias conexões
+paralelas pro mesmo cliente — cada uma numa porta efêmera diferente do lado
+dele — e isso é indistinguível de "1 atacante varrendo N portas" só pela
+contagem. Mesma classe de problema do horizontal (v1.35.1), dimensão
+diferente.
+
+**Fix**: filtro de bytes médios (`horizontal_max_avg_bytes`/
+`vertical_max_avg_bytes`, novo em `scan_detection.yaml`, default 10.000
+bytes) — mesmo conceito já usado e validado no `scan_max_avg_bytes` do
+ClientGuard: sonda de reconhecimento manda pouco por porta/host (um SYN,
+às vezes), tráfego real (streaming, CDN) manda muito mais. Uma porta/host
+só conta pro limiar se a contagem bater E a média de bytes ficar abaixo do
+piso — senão é tráfego real, não sonda. `None` desativa o filtro (mesma
+convenção de nullable já usada no resto do `scan_detection.yaml`). Aplicado
+aos dois detectores (horizontal ganhou de brinde, defesa em profundidade).
+
+4 testes novos de regressão (streaming real não dispara, sonda de baixo
+volume continua disparando, `None` desativa o filtro), 422 no total.
 
 ### v1.36.1 — 2026-07-10 — Corrige CPU alta: cache de redes já parseadas (protected_prefixes + whitelist)
 

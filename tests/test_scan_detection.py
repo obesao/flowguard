@@ -45,20 +45,31 @@ class FakeDaemon:
         self.fired.append((what, coro))
 
 
-def _scan_totals(prefix, src_ip, n_hosts=0, ports_per_host=None, same_port=22):
+def _scan_totals(prefix, src_ip, n_hosts=0, ports_per_host=None, same_port=22, avg_bytes=100):
     """Monta o dict no mesmo formato que flowguard.py::_aggregate_once produz.
     n_hosts simula 1 src_ip tocando N hosts distintos na MESMA porta (same_port) —
     requisito real do detector horizontal (achado de produção: CDN/big-tech
-    respondendo em portas efêmeras distintas por cliente NÃO deve contar)."""
+    respondendo em portas efêmeras distintas por cliente NÃO deve contar).
+    avg_bytes controla a média de bytes por host/porta (default baixo — sonda de
+    reconhecimento — pra não disparar o filtro de bytes médios sem querer nos
+    testes que não são sobre ele)."""
     dst_ips_by_port = defaultdict(set)
+    bytes_by_port = defaultdict(int)
+    dst_ports = defaultdict(set)
+    dst_bytes = defaultdict(int)
     if n_hosts:
         dst_ips_by_port[same_port] = set(f"177.86.16.{i}" for i in range(n_hosts))
-    dst_ports = defaultdict(set)
+        bytes_by_port[same_port] = avg_bytes * n_hosts
     if ports_per_host:
         host, n_ports = ports_per_host
         dst_ports[host] = set(range(1000, 1000 + n_ports))
+        dst_bytes[host] = avg_bytes * n_ports
         dst_ips_by_port[1000].add(host)
-    return {(prefix, src_ip): {"dst_ips_by_port": dst_ips_by_port, "dst_ports": dst_ports, "packets": 100}}
+        bytes_by_port[1000] += avg_bytes
+    return {(prefix, src_ip): {
+        "dst_ips_by_port": dst_ips_by_port, "bytes_by_port": bytes_by_port,
+        "dst_ports": dst_ports, "dst_bytes": dst_bytes, "packets": 100,
+    }}
 
 
 def _cfg(**scan_overrides):
@@ -118,10 +129,13 @@ def test_scan_horizontal_ignores_same_ip_on_different_ports(tmp_path):
     daemon = FakeDaemon(conn, _cfg(horizontal_hosts=5))
     engine = DetectionEngine(daemon)
     dst_ips_by_port = defaultdict(set)
+    bytes_by_port = defaultdict(int)
     for i in range(8):
         dst_ips_by_port[50000 + i].add(f"177.86.16.{i}")  # porta efêmera DIFERENTE por cliente
+        bytes_by_port[50000 + i] = 100
     totals = {("177.86.16.0/24", "157.240.22.13"): {
-        "dst_ips_by_port": dst_ips_by_port, "dst_ports": defaultdict(set), "packets": 100,
+        "dst_ips_by_port": dst_ips_by_port, "bytes_by_port": bytes_by_port,
+        "dst_ports": defaultdict(set), "dst_bytes": defaultdict(int), "packets": 100,
     }}
 
     asyncio.run(_run(engine, daemon, totals))
@@ -237,3 +251,66 @@ def test_scan_auto_block_not_called_when_flag_off_despite_auto_mode(tmp_path):
     asyncio.run(_run(engine, daemon, totals))
 
     assert daemon.bgp_manager.calls == []
+
+
+# --- filtro de bytes médios (achado real 2026-07-10: Google/YouTube bloqueados) --
+
+def test_scan_vertical_ignores_high_bandwidth_streaming(tmp_path):
+    """Achado real de produção: streaming/CDN (Google/YouTube) abre várias conexões
+    paralelas pro MESMO cliente, cada uma numa porta efêmera diferente do lado do
+    cliente — bate o limiar de scan vertical por contagem de portas sozinha. Sonda
+    de reconhecimento manda pouco por porta; streaming manda muito — filtro de
+    bytes médios deve distinguir os dois."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = FakeDaemon(conn, _cfg(vertical_ports=50, vertical_max_avg_bytes=10_000))
+    engine = DetectionEngine(daemon)
+    # 74 portas distintas no mesmo host, 500KB de média por porta — streaming real
+    totals = _scan_totals("177.86.17.0/24", "104.237.171.21", ports_per_host=("177.86.17.5", 74),
+                           avg_bytes=500_000)
+
+    asyncio.run(_run(engine, daemon, totals))
+
+    assert storage.list_scan_offenders(conn) == []
+
+
+def test_scan_vertical_still_detects_low_bandwidth_probing(tmp_path):
+    """Mesma contagem de portas do teste acima, mas bytes por porta BAIXOS (sonda de
+    verdade) — precisa continuar detectando, o filtro não pode virar bypass geral."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = FakeDaemon(conn, _cfg(vertical_ports=50, vertical_max_avg_bytes=10_000))
+    engine = DetectionEngine(daemon)
+    totals = _scan_totals("177.86.17.0/24", "203.0.113.50", ports_per_host=("177.86.17.6", 74),
+                           avg_bytes=60)  # poucos bytes por porta = sonda
+
+    asyncio.run(_run(engine, daemon, totals))
+
+    offenders = [o for o in storage.list_scan_offenders(conn) if o["scan_type"] == "vertical"]
+    assert len(offenders) == 1
+
+
+def test_scan_horizontal_ignores_high_bandwidth_same_port(tmp_path):
+    """Mesmo filtro aplicado ao horizontal, defesa em profundidade (caso mais raro
+    já que a porta é do lado do cliente, mas mesmo princípio)."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = FakeDaemon(conn, _cfg(horizontal_hosts=5, horizontal_max_avg_bytes=10_000))
+    engine = DetectionEngine(daemon)
+    totals = _scan_totals("177.86.16.0/24", "104.237.171.21", n_hosts=8, avg_bytes=500_000)
+
+    asyncio.run(_run(engine, daemon, totals))
+
+    assert storage.list_scan_offenders(conn) == []
+
+
+def test_scan_max_avg_bytes_none_disables_filter(tmp_path):
+    """None desativa o filtro por completo (mesma convenção do ClientGuard) — volta
+    ao comportamento antigo (só contagem de portas/hosts)."""
+    conn = storage.connect(str(tmp_path / "flow.sqlite"), check_same_thread=False)
+    daemon = FakeDaemon(conn, _cfg(vertical_ports=50, vertical_max_avg_bytes=None))
+    engine = DetectionEngine(daemon)
+    totals = _scan_totals("177.86.17.0/24", "104.237.171.21", ports_per_host=("177.86.17.5", 74),
+                           avg_bytes=500_000)
+
+    asyncio.run(_run(engine, daemon, totals))
+
+    offenders = [o for o in storage.list_scan_offenders(conn) if o["scan_type"] == "vertical"]
+    assert len(offenders) == 1

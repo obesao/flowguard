@@ -558,11 +558,17 @@ def cmd_scan_set(args: argparse.Namespace, sock_path: str) -> None:
             fields[key] = value == "on"
     for name, key in (
         ("horizontal_hosts", "horizontal_hosts"), ("vertical_ports", "vertical_ports"),
+        ("horizontal_max_avg_bytes", "horizontal_max_avg_bytes"),
+        ("vertical_max_avg_bytes", "vertical_max_avg_bytes"),
         ("max_tracked_src_ips_per_cycle", "max_tracked_src_ips_per_cycle"),
     ):
         value = getattr(args, name)
         if value is not None:
             fields[key] = value
+    if args.horizontal_max_avg_bytes_off:
+        fields["horizontal_max_avg_bytes"] = None
+    if args.vertical_max_avg_bytes_off:
+        fields["vertical_max_avg_bytes"] = None
     if not fields:
         console.print("[red]informe pelo menos uma opção (--enabled/--horizontal-hosts/--vertical-ports/...)[/red]")
         return
@@ -1152,6 +1158,16 @@ def main() -> None:
                              help="N hosts distintos (mesma porta) pra contar como scan horizontal")
     p_scan_set.add_argument("--vertical-ports", dest="vertical_ports", type=int,
                              help="N portas distintas (mesmo host) pra contar como scan vertical")
+    p_scan_set.add_argument("--horizontal-max-avg-bytes", dest="horizontal_max_avg_bytes", type=int,
+                             help="acima disso (bytes médios por host) é tráfego real, não sonda — "
+                                  "0 ou omitir 'null' não desativa; use --horizontal-max-avg-bytes-off")
+    p_scan_set.add_argument("--horizontal-max-avg-bytes-off", dest="horizontal_max_avg_bytes_off",
+                             action="store_true", help="desativa o filtro de bytes médios do horizontal")
+    p_scan_set.add_argument("--vertical-max-avg-bytes", dest="vertical_max_avg_bytes", type=int,
+                             help="acima disso (bytes médios por porta) é tráfego real (ex: streaming/CDN), "
+                                  "não sonda de reconhecimento")
+    p_scan_set.add_argument("--vertical-max-avg-bytes-off", dest="vertical_max_avg_bytes_off",
+                             action="store_true", help="desativa o filtro de bytes médios do vertical")
     p_scan_set.add_argument("--max-tracked-src-ips-per-cycle", dest="max_tracked_src_ips_per_cycle", type=int)
     p_scan_set.add_argument("--auto-block", dest="auto_block", choices=_AUTO_ONOFF,
                              help="liga o bloqueio automático (também precisa de "

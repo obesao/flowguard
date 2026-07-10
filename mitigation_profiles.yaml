@@ -40,8 +40,16 @@ cldap_amp:
   kind: discard
   rate_limit_mbps: 50
   auto_mode: suggestion
+syn_flood:
+  kind: discard
+  rate_limit_mbps: 50
+  auto_mode: 'off'
 anomalia_baseline:
   kind: discard
   rate_limit_mbps: 50
+  auto_mode: suggestion
+port_scan_horizontal:
+  auto_mode: suggestion
+port_scan_vertical:
   auto_mode: suggestion
 rtbh_default_ttl_s: 300

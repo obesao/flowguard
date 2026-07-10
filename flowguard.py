@@ -523,7 +523,10 @@ class FlowGuardDaemon:
                             )
                             scan_cap_hit = True
                     else:
-                        sc = {"dst_ips_by_port": defaultdict(set), "dst_ports": defaultdict(set), "packets": 0}
+                        sc = {
+                            "dst_ips_by_port": defaultdict(set), "bytes_by_port": defaultdict(int),
+                            "dst_ports": defaultdict(set), "dst_bytes": defaultdict(int), "packets": 0,
+                        }
                         scan_totals[scan_key] = sc
                 if sc is not None:
                     # horizontal só conta como scan se for a MESMA porta em vários hosts
@@ -531,9 +534,16 @@ class FlowGuardDaemon:
                     # VÁRIOS clientes meus — cada um na sua porta efêmera de retorno —
                     # batia o limiar; mesmo requisito que o ClientGuard já documenta em
                     # detect_scan_horizontal: "mesma dst_port", senão navegação normal
-                    # vira falso positivo).
+                    # vira falso positivo). bytes_by_port/dst_bytes alimentam o filtro de
+                    # bytes médios (achado real 2026-07-10: streaming/CDN — Google/YouTube
+                    # — abre várias conexões paralelas pro mesmo cliente, cada uma numa
+                    # porta efêmera DIFERENTE do lado do cliente, indistinguível de scan
+                    # vertical de verdade só pela contagem de portas; sonda de
+                    # reconhecimento manda poucos bytes por porta, streaming manda muito).
                     sc["dst_ips_by_port"][rec.dst_port].add(rec.dst_ip)
+                    sc["bytes_by_port"][rec.dst_port] += rec.real_bytes
                     sc["dst_ports"][rec.dst_ip].add(rec.dst_port)
+                    sc["dst_bytes"][rec.dst_ip] += rec.real_bytes
                     sc["packets"] += rec.real_packets
 
                 if rec.protocol in coord_allowed_protocols:

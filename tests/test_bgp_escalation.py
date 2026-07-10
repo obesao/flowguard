@@ -108,6 +108,28 @@ def test_save_scan_detection_rejects_non_positive_threshold(tmp_path):
         pass
 
 
+def test_save_scan_detection_max_avg_bytes_roundtrip(tmp_path):
+    path = str(tmp_path / "scan_detection.yaml")
+    updated = configio.save_scan_detection(path, {"vertical_max_avg_bytes": 20_000})
+    assert updated["vertical_max_avg_bytes"] == 20_000
+    assert configio.load_scan_detection(path)["vertical_max_avg_bytes"] == 20_000
+
+
+def test_save_scan_detection_max_avg_bytes_accepts_null_to_disable(tmp_path):
+    path = str(tmp_path / "scan_detection.yaml")
+    updated = configio.save_scan_detection(path, {"horizontal_max_avg_bytes": None})
+    assert updated["horizontal_max_avg_bytes"] is None
+
+
+def test_save_scan_detection_rejects_non_positive_max_avg_bytes(tmp_path):
+    path = str(tmp_path / "scan_detection.yaml")
+    try:
+        configio.save_scan_detection(path, {"vertical_max_avg_bytes": 0})
+        assert False, "deveria ter levantado ValueError"
+    except ValueError:
+        pass
+
+
 def test_load_escalation_missing_file_returns_defaults(tmp_path):
     cfg = configio.load_escalation(str(tmp_path / "nao-existe.yaml"))
     assert cfg == configio.DEFAULT_ESCALATION

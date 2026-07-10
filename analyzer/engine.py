@@ -308,6 +308,12 @@ class DetectionEngine:
         min_duration = cfg.get("detection", {}).get("min_attack_duration_s", 10)
         horizontal_hosts = scan_cfg.get("horizontal_hosts", 20)
         vertical_ports = scan_cfg.get("vertical_ports", 50)
+        # filtro de bytes médios — achado real 2026-07-10: Google/YouTube (e outros
+        # CDN/streaming) bloqueados por engano. Sonda de reconhecimento manda poucos
+        # bytes por porta/host (às vezes só um SYN); streaming/CDN de verdade manda
+        # muito mais. None desativa o filtro (mesma convenção do ClientGuard).
+        horizontal_max_avg_bytes = scan_cfg.get("horizontal_max_avg_bytes")
+        vertical_max_avg_bytes = scan_cfg.get("vertical_max_avg_bytes")
 
         open_offenders = await self.daemon.run_read_db(storage.list_open_scan_offenders_by_key)
 
@@ -324,19 +330,51 @@ class DetectionEngine:
             # horizontal = MESMA porta em vários hosts distintos — sem isso, qualquer
             # servidor popular (CDN/big-tech) respondendo a vários clientes meus (cada
             # um na sua porta efêmera de retorno) bate o limiar (achado real de
-            # produção). n_hosts é o pior caso entre as portas vistas nesse ciclo.
-            n_hosts = max((len(ips) for ips in st["dst_ips_by_port"].values()), default=0)
-            max_ports = max((len(ports) for ports in st["dst_ports"].values()), default=0)
+            # produção). Só conta uma porta como scan de verdade se, além do limiar de
+            # hosts, a média de bytes por host NAQUELA porta estiver abaixo do piso de
+            # sonda (senão é tráfego real, tipo CDN atendendo vários clientes na mesma
+            # porta — caso raro já que a porta é do lado do cliente, mas defesa em
+            # profundidade). n_hosts reflete só o grupo que de fato disparou.
+            horizontal_hit = False
+            n_hosts = 0
+            for port, ips in st["dst_ips_by_port"].items():
+                count = len(ips)
+                if count < horizontal_hosts:
+                    continue
+                if horizontal_max_avg_bytes is not None:
+                    avg_bytes = st["bytes_by_port"].get(port, 0) / count
+                    if avg_bytes > horizontal_max_avg_bytes:
+                        continue
+                horizontal_hit = True
+                n_hosts = max(n_hosts, count)
+
+            # vertical = N portas distintas no MESMO host — achado real 2026-07-10:
+            # streaming/CDN (Google/YouTube) abre várias conexões paralelas pro mesmo
+            # cliente, cada uma numa porta efêmera DIFERENTE do lado do cliente,
+            # indistinguível de scan vertical só pela contagem de portas. Mesmo filtro
+            # de bytes médios: sonda manda pouco por porta, streaming manda muito.
+            vertical_hit = False
+            max_ports = 0
+            for dst_ip, ports in st["dst_ports"].items():
+                count = len(ports)
+                if count < vertical_ports:
+                    continue
+                if vertical_max_avg_bytes is not None:
+                    avg_bytes = st["dst_bytes"].get(dst_ip, 0) / count
+                    if avg_bytes > vertical_max_avg_bytes:
+                        continue
+                vertical_hit = True
+                max_ports = max(max_ports, count)
 
             if scan_cfg.get("horizontal_enabled", True):
                 key = (prefix, src_ip, "horizontal")
                 seen_keys.add(key)
-                self._evaluate_scan(now, key, n_hosts >= horizontal_hosts, n_hosts, pps,
+                self._evaluate_scan(now, key, horizontal_hit, n_hosts, pps,
                                      min_duration, open_offenders, to_insert, to_update, to_close, to_notify)
             if scan_cfg.get("vertical_enabled", True):
                 key = (prefix, src_ip, "vertical")
                 seen_keys.add(key)
-                self._evaluate_scan(now, key, max_ports >= vertical_ports, max_ports, pps,
+                self._evaluate_scan(now, key, vertical_hit, max_ports, pps,
                                      min_duration, open_offenders, to_insert, to_update, to_close, to_notify)
 
         # src_ip que não mandou NENHUM pacote pro prefixo neste ciclo não aparece em

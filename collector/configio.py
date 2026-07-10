@@ -430,6 +430,15 @@ DEFAULT_SCAN_DETECTION = {
     "vertical_enabled": True,
     "horizontal_hosts": 20,
     "vertical_ports": 50,
+    # filtro de bytes médios — achado real 2026-07-10: Google/YouTube (e outro
+    # streaming/CDN) bloqueados por engano no vertical (várias conexões paralelas
+    # pro mesmo cliente, cada uma numa porta efêmera diferente do lado do
+    # cliente, indistinguível de scan vertical só pela contagem de portas).
+    # Sonda de reconhecimento manda poucos bytes por porta/host; tráfego real
+    # manda muito mais — mesmo conceito já usado no scan_max_avg_bytes do
+    # ClientGuard. None desativa o filtro.
+    "horizontal_max_avg_bytes": 10_000,
+    "vertical_max_avg_bytes": 10_000,
     "max_tracked_src_ips_per_cycle": 5000,
     "auto_block": False,
 }
@@ -468,6 +477,16 @@ def _validate_scan_detection_changes(changes: dict) -> None:
                 raise ValueError(f"{key} precisa ser um inteiro")
             if value <= 0:
                 raise ValueError(f"{key} precisa ser positivo")
+    # nullable: None desativa o filtro de bytes médios (mesma convenção do
+    # ClientGuard) — só valida positividade quando um valor de verdade é passado.
+    for key in ("horizontal_max_avg_bytes", "vertical_max_avg_bytes"):
+        if key in changes and changes[key] is not None:
+            try:
+                value = int(changes[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} precisa ser um inteiro (ou null pra desativar)")
+            if value <= 0:
+                raise ValueError(f"{key} precisa ser positivo (ou null pra desativar)")
     for key in ("enabled", "horizontal_enabled", "vertical_enabled", "auto_block"):
         if key in changes and not isinstance(changes[key], bool):
             raise ValueError(f"{key} precisa ser true/false")
