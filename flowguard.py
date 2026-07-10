@@ -460,6 +460,19 @@ class FlowGuardDaemon:
         scan_cfg = self.config.get("scan_detection", {})
         scan_max_tracked = scan_cfg.get("max_tracked_src_ips_per_cycle", 5000)
         scan_cap_hit = False
+        # destino coordenado de fora pra dentro: por (prefixo protegido, dst_ip, dst_port,
+        # protocolo), quantos src_ip externos distintos convergiram no ciclo — inverso do
+        # scan (lá 1 IP -> N alvos; aqui N IPs -> 1 alvo). Também usa dst_port CRU, mesmo
+        # motivo do scan (bucket_dst_port zeraria portas altas específicas que um ataque
+        # coordenado pode mirar). Só dentro de prefixo DE FATO protegido.
+        coord_totals: dict[tuple, dict] = {}
+        coord_cfg = self.config.get("coordinated_destination", {})
+        coord_max_tracked = coord_cfg.get("max_tracked_keys_per_cycle", 5000)
+        # só TCP por padrão — achado real de 2026-07-10: UDP em pools CGNAT deu 100%
+        # falso positivo (P2P/torrent/WebRTC/jogo recebendo peers na porta do host),
+        # não ataque coordenado. Ver comentário em configio.DEFAULT_COORDINATED_DESTINATION.
+        coord_allowed_protocols = set(coord_cfg.get("protocols", [6]))
+        coord_cap_hit = False
 
         for rec in records:
             # a NE8000 exporta netstream inbound+outbound em toda interface, então cada
@@ -522,6 +535,25 @@ class FlowGuardDaemon:
                     sc["dst_ips_by_port"][rec.dst_port].add(rec.dst_ip)
                     sc["dst_ports"][rec.dst_ip].add(rec.dst_port)
                     sc["packets"] += rec.real_packets
+
+                if rec.protocol in coord_allowed_protocols:
+                    coord_key = (matched_dst_prefix, rec.dst_ip, rec.dst_port, rec.protocol)
+                    cd = coord_totals.get(coord_key)
+                    if cd is None:
+                        if len(coord_totals) >= coord_max_tracked:
+                            if not coord_cap_hit:
+                                LOG.warning(
+                                    "coordinated_destination: limite de %d chaves rastreadas/ciclo atingido em %s — "
+                                    "novos destinos não rastreados até o próximo ciclo",
+                                    coord_max_tracked, matched_dst_prefix,
+                                )
+                                coord_cap_hit = True
+                        else:
+                            cd = {"src_ips": set(), "packets": 0}
+                            coord_totals[coord_key] = cd
+                    if cd is not None:
+                        cd["src_ips"].add(rec.src_ip)
+                        cd["packets"] += rec.real_packets
 
             # tráfego de saída (cliente protegido como origem) — só quando o src
             # cai num prefixo protegido; sem fallback pra não explodir cardinalidade
@@ -590,6 +622,7 @@ class FlowGuardDaemon:
         # roda mesmo sem tráfego no ciclo, para fechar ataques que já não estão mais ativos
         await self.detector.evaluate_cycle(now, proto_totals_bps, amp_totals_bps, syn_totals_bps)
         await self.detector.evaluate_scan_cycle(now, scan_totals, interval)
+        await self.detector.evaluate_coordinated_destination_cycle(now, coord_totals, interval)
         await self.bgp_manager.expire_cycle()
         await self.bgp_manager.check_reconciliation()
 

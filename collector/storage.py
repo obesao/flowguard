@@ -105,12 +105,35 @@ CREATE TABLE IF NOT EXISTS port_scan_offenders (
   dismissed      INTEGER DEFAULT 0
 );
 
+-- destino coordenado (muitos src_ip externos distintos convergindo pro MESMO
+-- host/porta protegido) — inverso do port scan: lá a chave inclui src_ip
+-- (1 atacante, vários alvos); aqui a chave é o DESTINO (dst_ip+porta), porque
+-- o "ofensor" real é o padrão de convergência, não um único src_ip isolado
+-- (ver analyzer/engine.py::evaluate_coordinated_destination_cycle).
+CREATE TABLE IF NOT EXISTS coordinated_destination_offenders (
+  id             INTEGER PRIMARY KEY,
+  dst_prefix     TEXT NOT NULL,
+  dst_ip         TEXT NOT NULL,
+  dst_port       INTEGER NOT NULL,
+  protocol       INTEGER NOT NULL,
+  ts_start       INTEGER NOT NULL,
+  ts_last_seen   INTEGER NOT NULL,
+  ts_end         INTEGER,          -- NULL enquanto ativo, mesmo padrão de attacks.ts_end
+  src_count      INTEGER NOT NULL, -- N src_ips externos distintos observados no ciclo
+  pps_peak       INTEGER NOT NULL,
+  mitigated      INTEGER DEFAULT 0,
+  flowspec_rule_id INTEGER,
+  dismissed      INTEGER DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_flow_aggs_ts ON flow_aggs(ts);
 CREATE INDEX IF NOT EXISTS idx_flow_aggs_prefix ON flow_aggs(dst_prefix, ts);
 CREATE INDEX IF NOT EXISTS idx_attacks_ts ON attacks(ts_start);
 CREATE INDEX IF NOT EXISTS idx_attacks_active ON attacks(ts_end, dismissed);
 CREATE INDEX IF NOT EXISTS idx_scan_offenders_key ON port_scan_offenders(dst_prefix, src_ip, scan_type);
 CREATE INDEX IF NOT EXISTS idx_scan_offenders_active ON port_scan_offenders(ts_end, dismissed);
+CREATE INDEX IF NOT EXISTS idx_coord_dest_key ON coordinated_destination_offenders(dst_prefix, dst_ip, dst_port, protocol);
+CREATE INDEX IF NOT EXISTS idx_coord_dest_active ON coordinated_destination_offenders(ts_end, dismissed);
 """
 
 
@@ -735,6 +758,61 @@ def apply_scan_offender_changes(conn: sqlite3.Connection, to_insert: list[dict],
 def mark_scan_offender_mitigated(conn: sqlite3.Connection, offender_id: int, flowspec_rule_id: int) -> None:
     conn.execute(
         "UPDATE port_scan_offenders SET mitigated = 1, flowspec_rule_id = ? WHERE id = ?",
+        (flowspec_rule_id, offender_id),
+    )
+    conn.commit()
+
+
+def list_coordinated_destination_offenders(conn: sqlite3.Connection, active_only: bool = True) -> list[dict]:
+    """Listagem pro portal/CLI (ver socket_server._cmd_coordinated_destination_offenders)
+    — diferente de list_open_coordinated_destination_offenders_by_key (dict por chave,
+    usado pela engine de detecção)."""
+    if active_only:
+        rows = conn.execute(
+            "SELECT * FROM coordinated_destination_offenders WHERE ts_end IS NULL ORDER BY ts_start DESC"
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM coordinated_destination_offenders ORDER BY ts_start DESC").fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_open_coordinated_destination_offenders_by_key(conn: sqlite3.Connection) -> dict[tuple, dict]:
+    """Todos os offenders de destino coordenado em aberto, de uma vez — mesmo motivo
+    de list_open_scan_offenders_by_key (evita 1 SELECT por chave a cada ciclo)."""
+    rows = conn.execute("SELECT * FROM coordinated_destination_offenders WHERE ts_end IS NULL").fetchall()
+    return {(r["dst_prefix"], r["dst_ip"], r["dst_port"], r["protocol"]): dict(r) for r in rows}
+
+
+def apply_coordinated_destination_offender_changes(conn: sqlite3.Connection, to_insert: list[dict],
+                                                    to_update: list[tuple], to_close: list[tuple]) -> list[int]:
+    """Mesma estratégia de apply_scan_offender_changes: 1 transação por ciclo. Retorna
+    os ids inseridos, na mesma ordem de to_insert, pra casar com to_notify por posição."""
+    inserted_ids: list[int] = []
+    for item in to_insert:
+        cur = conn.execute(
+            """INSERT INTO coordinated_destination_offenders
+               (dst_prefix, dst_ip, dst_port, protocol, ts_start, ts_last_seen, src_count, pps_peak)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (item["dst_prefix"], item["dst_ip"], item["dst_port"], item["protocol"], item["ts_start"],
+             item["ts_start"], item["src_count"], item["pps_peak"]),
+        )
+        inserted_ids.append(cur.lastrowid)
+    for offender_id, src_count, pps, now in to_update:
+        conn.execute(
+            "UPDATE coordinated_destination_offenders SET src_count = MAX(src_count, ?), "
+            "pps_peak = MAX(pps_peak, ?), ts_last_seen = ? WHERE id = ?",
+            (src_count, pps, now, offender_id),
+        )
+    for offender_id, ts_end in to_close:
+        conn.execute("UPDATE coordinated_destination_offenders SET ts_end = ? WHERE id = ?", (ts_end, offender_id))
+    conn.commit()
+    return inserted_ids
+
+
+def mark_coordinated_destination_offender_mitigated(conn: sqlite3.Connection, offender_id: int,
+                                                     flowspec_rule_id: int) -> None:
+    conn.execute(
+        "UPDATE coordinated_destination_offenders SET mitigated = 1, flowspec_rule_id = ? WHERE id = ?",
         (flowspec_rule_id, offender_id),
     )
     conn.commit()

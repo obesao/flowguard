@@ -19,6 +19,7 @@ DEFAULT_DETECTION_TEMPLATES_FILE = "/root/flowguard/detection_templates.yaml"
 DEFAULT_DETECTION_OVERRIDES_FILE = "/root/flowguard/detection_overrides.yaml"
 DEFAULT_SCAN_DETECTION_FILE = "/root/flowguard/scan_detection.yaml"
 DEFAULT_ESCALATION_FILE = "/root/flowguard/escalation.yaml"
+DEFAULT_COORDINATED_DESTINATION_FILE = "/root/flowguard/coordinated_destination.yaml"
 
 
 def load_config(path: str) -> dict:
@@ -33,6 +34,7 @@ def load_config(path: str) -> dict:
     dov_path = cfg.get("detection_overrides_file", DEFAULT_DETECTION_OVERRIDES_FILE)
     scan_path = cfg.get("scan_detection_file", DEFAULT_SCAN_DETECTION_FILE)
     esc_path = cfg.get("escalation_file", DEFAULT_ESCALATION_FILE)
+    coord_path = cfg.get("coordinated_destination_file", DEFAULT_COORDINATED_DESTINATION_FILE)
 
     cfg["protected_prefixes"] = load_yaml_list(pp_path)
     cfg["whitelist"] = load_yaml_list(wl_path)
@@ -41,6 +43,7 @@ def load_config(path: str) -> dict:
     cfg["detection_templates"] = load_detection_templates(dtpl_path)
     cfg["scan_detection"] = load_scan_detection(scan_path)
     cfg["escalation"] = load_escalation(esc_path)
+    cfg["coordinated_destination"] = load_coordinated_destination(coord_path)
     # ajuste fino via portal/CLI, aplicado por cima do detection.* já presente no
     # config.yaml — reload_config() do daemon recarrega load_config() inteiro do
     # zero, então isso aplica automaticamente sem precisar de nenhum estado extra
@@ -55,6 +58,7 @@ def load_config(path: str) -> dict:
     cfg["_detection_overrides_file"] = dov_path
     cfg["_scan_detection_file"] = scan_path
     cfg["_escalation_file"] = esc_path
+    cfg["_coordinated_destination_file"] = coord_path
     return cfg
 
 
@@ -476,6 +480,91 @@ def save_scan_detection(path: str, changes: dict) -> dict:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(SCAN_DETECTION_HEADER.rstrip() + "\n")
+        yaml.safe_dump(current, fh, sort_keys=False, allow_unicode=True)
+    return current
+
+
+# --- coordinated_destination.yaml: muitos src_ip externos convergindo pro MESMO
+# host/porta protegido — inverso do scan (lá 1 IP -> N alvos; aqui N IPs -> 1 alvo).
+# Mesmo padrão de scan_detection.yaml (enabled/thresholds/auto_block num arquivo só).
+# common_service_ports replica o default do ClientGuard (config.yaml::common_service_ports)
+# — portas onde MUITA gente distinta batendo no mesmo host é esperado (CDN/DNS/jogos/
+# VoIP), não indício de ataque coordenado.
+# protocols restringe a detecção só a TCP (6) por padrão — achado real de produção
+# (2026-07-10): validando com tráfego real, as primeiras detecções foram 100% UDP/ESP
+# em pools CGNAT residenciais (177.86.20/21.0/24), assinatura clássica de P2P/torrent/
+# WebRTC/jogo (1 host recebendo conexão de vários peers na porta dele), não ataque —
+# 0% das detecções eram TCP. Restringir a TCP elimina esse ruído sem perder cobertura
+# real (bots coordenados numa porta TCP específica continuam detectados).
+
+DEFAULT_COORDINATED_DESTINATION = {
+    "enabled": True,
+    "min_distinct_sources": 8,
+    "common_service_ports": [53, 80, 123, 443, 853, 993, 3478, 4500, 5222, 5223, 5228, 5349, 6881, 19132, 51820, 64738],
+    "protocols": [6],
+    "max_tracked_keys_per_cycle": 5000,
+    "auto_block": False,
+}
+
+COORDINATED_DESTINATION_HEADER = (
+    "# coordinated_destination.yaml — muitos IPs externos distintos convergindo pro\n"
+    "# MESMO host/porta protegido (inverso do port scan: lá é 1 IP -> N alvos, aqui é\n"
+    "# N IPs -> 1 alvo). Pega ataques distribuídos de baixo volume por fonte, que não\n"
+    "# batem o limiar de ddos_volumetrico. min_distinct_sources é placeholder — calibrar\n"
+    "# contra tráfego real antes de confiar no sinal. common_service_ports excluídas de\n"
+    "# propósito (portas onde muita gente distinta é normal, não ataque). protocols\n"
+    "# restringe a números de protocolo IANA (6=TCP, 17=UDP, ...) — só TCP por padrão,\n"
+    "# achado real de 2026-07-10: UDP em pools residenciais/CGNAT deu 100% falso\n"
+    "# positivo (P2P/torrent/WebRTC/jogo), não ataque. auto_block também precisa de\n"
+    "# mitigation_profiles.coordinated_destination.auto_mode != 'off'.\n"
+    "# Editável via portal (aba Configuração > FlowGuard) ou flowguard-cli coordinated set."
+)
+
+
+def load_coordinated_destination(path: str) -> dict:
+    merged = dict(DEFAULT_COORDINATED_DESTINATION)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except FileNotFoundError:
+        data = None
+    if data:
+        merged.update({k: v for k, v in data.items() if k in DEFAULT_COORDINATED_DESTINATION})
+    return merged
+
+
+def _validate_coordinated_destination_changes(changes: dict) -> None:
+    unknown = sorted(k for k in changes if k not in DEFAULT_COORDINATED_DESTINATION)
+    if unknown:
+        raise ValueError(f"chave(s) desconhecida(s): {', '.join(unknown)}")
+    for key in ("min_distinct_sources", "max_tracked_keys_per_cycle"):
+        if key in changes:
+            try:
+                value = int(changes[key])
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} precisa ser um inteiro")
+            if value <= 0:
+                raise ValueError(f"{key} precisa ser positivo")
+    for key in ("enabled", "auto_block"):
+        if key in changes and not isinstance(changes[key], bool):
+            raise ValueError(f"{key} precisa ser true/false")
+    if "common_service_ports" in changes:
+        value = changes["common_service_ports"]
+        if not isinstance(value, list) or not all(isinstance(p, int) for p in value):
+            raise ValueError("common_service_ports precisa ser uma lista de portas (inteiros)")
+    if "protocols" in changes:
+        value = changes["protocols"]
+        if not isinstance(value, list) or not value or not all(isinstance(p, int) for p in value):
+            raise ValueError("protocols precisa ser uma lista não vazia de números de protocolo (inteiros)")
+
+
+def save_coordinated_destination(path: str, changes: dict) -> dict:
+    _validate_coordinated_destination_changes(changes)
+    current = load_coordinated_destination(path)
+    current.update(changes)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(COORDINATED_DESTINATION_HEADER.rstrip() + "\n")
         yaml.safe_dump(current, fh, sort_keys=False, allow_unicode=True)
     return current
 

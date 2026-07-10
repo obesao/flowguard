@@ -1,6 +1,6 @@
 # FlowGuard
 
-**Versão atual: v1.35.1**
+**Versão atual: v1.36.0**
 
 Sistema de análise de tráfego BGP em tempo real e mitigação de DDoS para um
 provedor de internet, modelado na arquitetura do FastNetMon. Coleta
@@ -82,6 +82,54 @@ análise sob demanda.
 | `collector/configio.py` | Leitura/gravação de `protected_prefixes.yaml`/`whitelist.yaml`/`detection_toggles.yaml`/`mitigation_profiles.yaml` |
 
 ## Changelog
+
+### v1.36.0 — 2026-07-10 — Detecção de destino coordenado (N src externos → 1 host/porta protegido)
+
+Pedido do usuário: portar pro FlowGuard os detectores não-DDoS que só existiam
+no ClientGuard (direção cliente→mundo). Primeiro dos 4: `coordinated_destination`
+— inverso do port scan (lá 1 IP externo → N alvos; aqui N IPs externos → 1
+alvo), pega ataques distribuídos de baixo volume por fonte que não batem o
+limiar de `ddos_volumetrico` (agregado só por bps/pps do prefixo, não por
+contagem de fontes distintas).
+
+Arquitetura idêntica ao port scan (v1.35.0): rastreamento em memória durante
+`_aggregate_once` (novo dict `coord_totals`, chave `(dst_prefix, dst_ip,
+dst_port, protocol)` → conjunto de `src_ip` externos distintos + pacotes),
+consumido por `evaluate_coordinated_destination_cycle` (novo, em
+`analyzer/engine.py`) — mesmo padrão de `_pending`/min_duration sustentado/
+transação única de insert+update+close. Tabela própria
+`coordinated_destination_offenders` (mesma forma de `port_scan_offenders`,
+chave pelo DESTINO em vez do atacante). Config novo `coordinated_destination.yaml`
+(enabled/min_distinct_sources/common_service_ports/protocols/auto_block),
+mesmo padrão de `scan_detection.yaml`. Novo em `flowguard-cli.py`: `coordinated
+list|set|offenders`. Novo no portal: seção "Detecção de Destino Coordenado"
+(Configuração > FlowGuard) e sub-tabela dentro da aba Incidentes (ver
+CHANGELOG do `flowguard-portal`).
+
+**Decisão explícita do usuário**: só detecção/alerta nesta versão, sem
+mitigação automática — `mitigation_profiles.coordinated_destination` não
+existe de propósito, então `auto_block: true` não teria efeito nenhum mesmo
+que ligado (diferente do port scan, aqui é intencional desde o início, não
+um "interruptor morto" descoberto depois).
+
+**Achado real de produção, no mesmo dia do deploy**: as primeiras ~13
+detecções ativas foram **100% UDP/ESP** (nenhuma TCP), espalhadas por vários
+hosts diferentes nos pools CGNAT (`177.86.20.0/24`, `177.86.21.0/24`), cada
+um numa porta alta diferente (nenhuma nas `common_service_ports`), 8-32
+fontes externas distintas cada. Assinatura clássica de P2P/torrent/WebRTC/
+jogo (1 host residencial recebendo conexão de vários peers na porta dele),
+não ataque coordenado — mesma classe de falso positivo que o scan horizontal
+já teve com CDN (v1.35.1), mas achado no MESMO dia por ter validado com
+tráfego real antes de confiar no sinal (como planejado). Fix: `protocols:
+[6]` (só TCP) por padrão em `coordinated_destination.yaml` — elimina o
+ruído observado (100% dele era não-TCP) sem perder cobertura real (bots
+coordenados numa porta TCP específica continuam detectados). Validado com
+Playwright real no portal, CLI contra o daemon real, teste completo de
+storage (schema+CRUD via SQLite em memória) e do motor de detecção
+(abre/atualiza/fecha no tempo certo, ignora porta excluída) antes do
+restart em produção. `flowguard.service` reiniciado 2x (1x pro deploy
+inicial, 1x pro fix do filtro de protocolo), sem downtime perceptível nas
+duas vezes.
 
 ### v1.35.1 — 2026-07-09 — Corrige falso positivo do scan horizontal (CDN/big-tech flagados)
 

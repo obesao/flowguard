@@ -178,6 +178,13 @@ class SocketServer:
         offenders = await self.daemon.run_read_db(storage.list_scan_offenders, active_only=not history)
         return {"ok": True, "offenders": offenders}
 
+    async def _cmd_coordinated_destination_offenders(self, request: dict) -> dict:
+        history = bool(request.get("history", False))
+        offenders = await self.daemon.run_read_db(
+            storage.list_coordinated_destination_offenders, active_only=not history
+        )
+        return {"ok": True, "offenders": offenders}
+
     async def _cmd_monitor_list(self, request: dict) -> dict:
         protected = self.daemon.config.get("protected_prefixes", [])
         prefixes = [entry["prefix"] for entry in protected if entry.get("prefix")]
@@ -445,6 +452,21 @@ class SocketServer:
             return {"ok": False, "error": str(exc)}
         self.daemon.reload_config()
         return {"ok": True, "scan_detection": self.daemon.config.get("scan_detection", {})}
+
+    async def _cmd_coordinated_destination_cfg(self, request: dict) -> dict:
+        return {"ok": True, "coordinated_destination": self.daemon.config.get("coordinated_destination", {})}
+
+    async def _cmd_coordinated_destination_cfg_set(self, request: dict) -> dict:
+        changes = request.get("changes")
+        if not isinstance(changes, dict) or not changes:
+            return {"ok": False, "error": "changes (objeto não vazio) obrigatório"}
+        path = self.daemon.config["_coordinated_destination_file"]
+        try:
+            configio.save_coordinated_destination(path, changes)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.daemon.reload_config()
+        return {"ok": True, "coordinated_destination": self.daemon.config.get("coordinated_destination", {})}
 
     async def _cmd_escalation_cfg(self, request: dict) -> dict:
         return {"ok": True, "escalation": self.daemon.config.get("escalation", {})}

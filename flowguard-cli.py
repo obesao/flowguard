@@ -589,6 +589,60 @@ def cmd_scan_offenders(args: argparse.Namespace, sock_path: str) -> None:
     console.print(table)
 
 
+def cmd_coordinated_list(args: argparse.Namespace, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "coordinated_destination_cfg"})
+    die_on_error(resp)
+    cfg = resp["coordinated_destination"]
+    table = Table(title="Detecção de destino coordenado (N src externos -> 1 host/porta protegido)")
+    table.add_column("Chave")
+    table.add_column("Valor")
+    for key, value in cfg.items():
+        table.add_row(key, str(value))
+    console.print(table)
+    console.print("[dim]detecção/alerta apenas nesta versão — sem mitigação automática "
+                   "(mitigation_profiles.coordinated_destination não existe ainda)[/dim]")
+
+
+def cmd_coordinated_set(args: argparse.Namespace, sock_path: str) -> None:
+    fields: dict = {}
+    for name, key in (("enabled", "enabled"), ("auto_block", "auto_block")):
+        value = getattr(args, name)
+        if value is not None:
+            fields[key] = value == "on"
+    for name, key in (
+        ("min_distinct_sources", "min_distinct_sources"),
+        ("max_tracked_keys_per_cycle", "max_tracked_keys_per_cycle"),
+    ):
+        value = getattr(args, name)
+        if value is not None:
+            fields[key] = value
+    if not fields:
+        console.print("[red]informe pelo menos uma opção (--enabled/--min-distinct-sources/...)[/red]")
+        return
+    resp = send_command(sock_path, {"cmd": "coordinated_destination_cfg_set", "changes": fields})
+    _print_simple(resp, ok_message=f"coordinated_destination: {fields}")
+
+
+def cmd_coordinated_offenders(args: argparse.Namespace, sock_path: str) -> None:
+    resp = send_command(sock_path, {"cmd": "coordinated_destination_offenders", "history": args.history})
+    die_on_error(resp)
+    table = Table(title="Destinos coordenados detectados" + (" (histórico)" if args.history else " (ativos)"))
+    table.add_column("Prefixo")
+    table.add_column("Dst IP")
+    table.add_column("Porta")
+    table.add_column("Protocolo")
+    table.add_column("Fontes")
+    table.add_column("Bloqueado")
+    table.add_column("Início")
+    for row in resp["offenders"]:
+        table.add_row(
+            row["dst_prefix"], row["dst_ip"], str(row["dst_port"]), str(row["protocol"]),
+            str(row["src_count"]), "sim" if row["mitigated"] else "não",
+            time.strftime("%d/%m %H:%M", time.localtime(row["ts_start"])),
+        )
+    console.print(table)
+
+
 _AUTO_ONOFF = ["on", "off"]
 
 
@@ -1106,6 +1160,21 @@ def main() -> None:
     p_scan_offenders = scan_sub.add_parser("offenders", help="scanners detectados")
     p_scan_offenders.add_argument("--history", action="store_true", help="inclui offenders já encerrados")
     p_scan_offenders.set_defaults(func=cmd_scan_offenders)
+
+    p_coord = sub.add_parser("coordinated", help="destino coordenado (N src externos -> 1 host/porta protegido)")
+    coord_sub = p_coord.add_subparsers(dest="coordinated_action", required=True)
+    coord_sub.add_parser("list").set_defaults(func=cmd_coordinated_list)
+    p_coord_set = coord_sub.add_parser("set")
+    p_coord_set.add_argument("--enabled", choices=_AUTO_ONOFF)
+    p_coord_set.add_argument("--min-distinct-sources", dest="min_distinct_sources", type=int,
+                              help="N src_ips externos distintos convergindo no mesmo host/porta pra disparar")
+    p_coord_set.add_argument("--max-tracked-keys-per-cycle", dest="max_tracked_keys_per_cycle", type=int)
+    p_coord_set.add_argument("--auto-block", dest="auto_block", choices=_AUTO_ONOFF,
+                              help="sem efeito nesta versão — sem mitigation_profiles.coordinated_destination ainda")
+    p_coord_set.set_defaults(func=cmd_coordinated_set)
+    p_coord_offenders = coord_sub.add_parser("offenders", help="destinos coordenados detectados")
+    p_coord_offenders.add_argument("--history", action="store_true", help="inclui offenders já encerrados")
+    p_coord_offenders.set_defaults(func=cmd_coordinated_offenders)
 
     p_escalation = sub.add_parser("escalation", help="bloqueio progressivo por reincidência (scan)")
     escalation_sub = p_escalation.add_subparsers(dest="escalation_action", required=True)

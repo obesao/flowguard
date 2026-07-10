@@ -63,6 +63,9 @@ class DetectionEngine:
         # (dst_prefix, src_ip, scan_type) -> idem, namespace separado do de cima (chave
         # de formato diferente, e port_scan_offenders é uma tabela própria, não `attacks`)
         self._pending_scan: dict[tuple, float] = {}
+        # (dst_prefix, dst_ip, dst_port, protocol) -> idem, namespace próprio (tabela
+        # coordinated_destination_offenders, chave pelo DESTINO, não pelo atacante)
+        self._pending_coord: dict[tuple, float] = {}
 
     async def evaluate_cycle(self, now: int, proto_totals: dict, amp_totals: dict, syn_totals: dict | None = None) -> None:
         syn_totals = syn_totals or {}
@@ -372,6 +375,87 @@ class DetectionEngine:
                                       offender_id, resp["rule_id"])
         else:
             LOG.error("falha ao bloquear scanner %s (offender #%s): %s", src_ip, offender_id, resp.get("error"))
+
+    async def evaluate_coordinated_destination_cycle(self, now: int, coord_totals: dict, interval: int) -> None:
+        """Destino coordenado de fora pra dentro: N src_ip externos distintos convergindo
+        pro MESMO host/porta protegido — inverso do scan (lá 1 IP -> N alvos, aqui N IPs
+        -> 1 alvo). coord_totals vem já montado por flowguard.py::_aggregate_once, chave
+        (dst_prefix, dst_ip, dst_port, protocol) -> {"src_ips": set, "packets": int}.
+        Pega ataques distribuídos de baixo volume por fonte, que não batem o limiar de
+        ddos_volumetrico (agregado só por bps/pps do prefixo, não por contagem de fontes).
+        Mitigação automática deliberadamente FORA desta versão (só detecção/alerta) —
+        ver mitigation_profiles.yaml: nenhuma chave coordinated_destination existe ainda,
+        então auto_block em coordinated_destination.yaml não tem efeito nenhum hoje
+        (mesmo "interruptor morto" documentado pro port scan — aqui é intencional desde
+        o início, não um bug latente)."""
+        cfg = self.daemon.config
+        coord_cfg = cfg.get("coordinated_destination", {})
+        if not coord_cfg.get("enabled", True):
+            return
+        whitelist = cfg.get("whitelist", [])
+        min_duration = cfg.get("detection", {}).get("min_attack_duration_s", 10)
+        min_sources = coord_cfg.get("min_distinct_sources", 8)
+        excluded_ports = set(coord_cfg.get("common_service_ports", []))
+
+        open_offenders = await self.daemon.run_read_db(storage.list_open_coordinated_destination_offenders_by_key)
+
+        to_insert: list[dict] = []
+        to_update: list[tuple] = []
+        to_close: list[tuple] = []
+        to_notify: list[tuple] = []
+        seen_keys: set[tuple] = set()
+
+        for (prefix, dst_ip, dst_port, protocol), st in coord_totals.items():
+            if dst_port in excluded_ports:
+                continue
+            if _is_whitelisted(f"{dst_ip}/32", whitelist):
+                continue
+            n_sources = len(st["src_ips"])
+            pps = int(st["packets"] / interval) if interval else 0
+            key = (prefix, dst_ip, dst_port, protocol)
+            seen_keys.add(key)
+            self._evaluate_coord(now, key, n_sources >= min_sources, n_sources, pps,
+                                  min_duration, open_offenders, to_insert, to_update, to_close, to_notify)
+
+        # mesmo motivo do scan: destino que não recebeu NENHUM pacote neste ciclo não
+        # aparece em coord_totals — sem isso, um offender aberto nunca fecharia sozinho.
+        for key, row in open_offenders.items():
+            if key in seen_keys:
+                continue
+            self._pending_coord.pop(key, None)
+            to_close.append((row["id"], now))
+
+        if to_insert or to_update or to_close:
+            await self.daemon.run_db(
+                storage.apply_coordinated_destination_offender_changes, self.daemon.conn,
+                to_insert, to_update, to_close,
+            )
+
+        for prefix, dst_ip, dst_port, protocol, src_count, pps in to_notify:
+            LOG.warning(
+                "DESTINO COORDENADO DETECTADO: %s:%d (protocolo %s) dentro de %s — "
+                "%d fontes externas distintas, %s pps",
+                dst_ip, dst_port, protocol, prefix, src_count, f"{pps:,}".replace(",", "."),
+            )
+
+    def _evaluate_coord(self, now, key, triggered, src_count, pps, min_duration,
+                         open_offenders, to_insert, to_update, to_close, to_notify) -> None:
+        existing = open_offenders.get(key)
+        if triggered:
+            first_seen = self._pending_coord.setdefault(key, now)
+            if (now - first_seen) >= min_duration:
+                if existing:
+                    to_update.append((existing["id"], src_count, pps, now))
+                else:
+                    prefix, dst_ip, dst_port, protocol = key
+                    to_insert.append({"dst_prefix": prefix, "dst_ip": dst_ip, "dst_port": dst_port,
+                                       "protocol": protocol, "ts_start": now, "src_count": src_count,
+                                       "pps_peak": pps})
+                    to_notify.append((prefix, dst_ip, dst_port, protocol, src_count, pps))
+        else:
+            self._pending_coord.pop(key, None)
+            if existing:
+                to_close.append((existing["id"], now))
 
 
 def to_close_log(to_close: list[tuple], open_attacks: dict[tuple, dict]):
