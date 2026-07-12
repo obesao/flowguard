@@ -473,7 +473,7 @@ de host /32, ranking de target_host) e não tinha teste nenhum.
 rodar `__init__` (mesmo padrão já usado em `test_wa_notifications.py`/
 `test_bgp_manager.py` — seta só queue/config/conn e fakes gravando chamada
 pro detector/bgp_manager), gravando num SQLite real via `tmp_path`. Cobre:
-flow_direction!=0 não duplica contagem (a NE8000 exporta o mesmo pacote em
+flow_direction!=0 não duplica contagem (o roteador de borda exporta o mesmo pacote em
 ingress+egress); `bucket_dst_port` aplicado certo (zero pra fallback mesmo
 em porta well-known, mantém porta em prefixo protegido, zera porta
 efêmera); `top_dst_ips` só rastreado em prefixo protegido (lista vazia vira
@@ -720,7 +720,7 @@ dedicado — caía dentro do volumétrico genérico, sem diagnóstico nem
 mitigação cirúrgica próprios.
 
 **Fase 0 (diagnóstico, feito antes de decidir escopo):** fragmentação IP
-também é um gap, mas SSH read-only no NE8000BGP (`display
+também é um gap, mas SSH read-only no roteador de borda (`display
 current-configuration | include netstream`, autorizado explicitamente)
 confirmou que o NetStream exportado hoje não inclui campos de fragmentação
 — fica documentado como pendência, não implementado neste ciclo (mudança
@@ -1033,7 +1033,7 @@ portal.
   e notificação WhatsApp ganharam um campo `mode` pra distinguir apply de
   revert.
 - Validado com Netmiko mockado reproduzindo a sequência real de comandos do
-  equipamento que motivou o pedido (`NE8000-PPPOE`/`HUAWEI-PPPOE-222`) e com
+  equipamento que motivou o pedido (NAT PPPoE de operadora) e com
   Playwright real contra o backend de produção (contagens de comando batendo
   com `warmode.yaml` real, confirm button corretamente desabilitado quando
   `revert_commands` está vazio).
@@ -1055,11 +1055,11 @@ portal.
   commit ao SAIR do modo config, ver v1.17.0) já foi corrigido nos módulos
   `routercfg`/`edge_mitigation` trocando `device_type` pra `huawei_vrpv8` —
   não se aplica a este equipamento, que é hardware/versão de VRP diferente
-  do NE8000 principal (confirmado com o usuário).
+  do roteador de borda principal (confirmado com o usuário).
 
-### v1.17.0 — 2026-07-02 — Corrige driver Netmiko: huawei_vrp não aplica config em NE8000 de carrier real
+### v1.17.0 — 2026-07-02 — Corrige driver Netmiko: huawei_vrp não aplica config em roteador de borda de carrier real
 - **Bug real, achado e corrigido testando pela primeira vez uma aplicação de
-  verdade (não só leitura) contra o NE8000 de produção**: `device_type:
+  verdade (não só leitura) contra o roteador de borda de produção**: `device_type:
   huawei_vrp` em `warmode.yaml` conecta e lê (`display ...`) sem problema,
   mas trava em qualquer `send_config_set` (aplicar mudança de config) — esse
   equipamento usa o modelo de configuração candidata do VRP (prompt some com
@@ -1075,7 +1075,7 @@ portal.
   de teste (prefixo RFC 5737, sem tráfego real) e reverter, tanto via
   `routercfg.apply` quanto via `clientguard/edge_mitigation.py` (mesmo
   equipamento, credenciais compartilhadas) — os dois caminhos de código
-  agora aplicam config de verdade no NE8000BGP.
+  agora aplicam config de verdade no roteador de borda BGP.
 - Esse bug afetava IGUALMENTE o módulo `routercfg` (templates do portal) e a
   mitigação de borda do ClientGuard — nenhum dos dois nunca tinha conseguido
   aplicar uma mudança de config real antes desta correção, mesmo com
@@ -1106,12 +1106,13 @@ na mesma tabela, só distinguível hoje por um `label` de texto livre.
   `flowspec_rules`/`origin` foi adicionado aqui — a suíte atual do FlowGuard
   cobre só `routercfg`; ver `clientguard` pro teste de `_cmd_block_add`).
 
-### v1.15.0 — 2026-07-02 — Corrige nome do equipamento (NE8000BGP) em todos os templates
+### v1.15.0 — 2026-07-02 — Corrige nome do equipamento (roteador de borda) em todos os templates
 - **Bug real**: `routercfg/apply.py` (`DEFAULT_DEVICE_NAME`) e os 11 templates
-  em `router_templates.yaml` ainda referenciavam `"NE8000 borda"` — nome
-  placeholder usado quando o módulo foi criado, antes do equipamento real
-  ser cadastrado em `warmode.yaml` como `NE8000BGP` (mesmo nome usado pela
-  mitigação de borda do ClientGuard, ver `clientguard/edge_mitigation.py`).
+  em `router_templates.yaml` ainda referenciavam um nome placeholder genérico
+  usado quando o módulo foi criado, antes do equipamento real ser cadastrado
+  em `warmode.yaml` com o nome definitivo do roteador de borda (mesmo nome
+  usado pela mitigação de borda do ClientGuard, ver
+  `clientguard/edge_mitigation.py`).
   Com o nome desalinhado, toda aplicação de template falhava com
   "equipamento não encontrado" mesmo já com credenciais reais configuradas.
 - Confirmado via CGI real: os 11 templates agora reportam `device_ready:
